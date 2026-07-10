@@ -1,6 +1,6 @@
 # ncv-plugin
 
-A Capacitor plugin for the NCV Bijbelstudie app that implements clipboard functionality with a similar API as the native Capacitor Clipboard plugin, but adds support for HTML, and adds an extra function to open urls on the system instead of in the webview.
+A Capacitor plugin for the NCV Bijbelstudie app that implements clipboard functionality with a similar API as the native Capacitor Clipboard plugin, but adds support for HTML, and adds an extra function to open urls on the system instead of in the webview, and get platform information that supports the app running on Mac in iPad mode.
 
 ## Install
 
