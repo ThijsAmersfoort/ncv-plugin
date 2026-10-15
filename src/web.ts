@@ -4,7 +4,8 @@ import type { NCVpluginPlugin,
               ReadResult, 
               WriteOptions,
               OpenURLOptions,
-              OpenURLResult } from './definitions';
+              OpenURLResult,
+              SecureMigrateResult } from './definitions';
 
 declare global {
   interface Clipboard {
@@ -144,5 +145,30 @@ export class NCVpluginWeb extends WebPlugin implements NCVpluginPlugin {
   async openUrl(options: OpenURLOptions): Promise<OpenURLResult> {
     window.open(options.url, '_blank');
     return { completed: true };
+  }
+
+  //beveiligde opslag ook alleen native; de online PWA logt in via de server
+  async secureGet(): Promise<{ value?: string }> {
+    throw this.unavailable('Beveiligde opslag is alleen beschikbaar in de native app');
+  }
+
+  async secureSet(): Promise<void> {
+    throw this.unavailable('Beveiligde opslag is alleen beschikbaar in de native app');
+  }
+
+  async secureRemove(): Promise<void> {
+    throw this.unavailable('Beveiligde opslag is alleen beschikbaar in de native app');
+  }
+
+  async secureKeys(): Promise<{ keys: string[] }> {
+    throw this.unavailable('Beveiligde opslag is alleen beschikbaar in de native app');
+  }
+
+  async secureClear(): Promise<void> {
+    throw this.unavailable('Beveiligde opslag is alleen beschikbaar in de native app');
+  }
+
+  async secureMigrate(): Promise<SecureMigrateResult> {
+    throw this.unavailable('Beveiligde opslag is alleen beschikbaar in de native app');
   }
 }

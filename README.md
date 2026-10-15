@@ -17,7 +17,14 @@ npx cap sync
 * [`ClipboardWrite(...)`](#clipboardwrite)
 * [`ClipboardRead()`](#clipboardread)
 * [`openUrl(...)`](#openurl)
+* [`secureGet(...)`](#secureget)
+* [`secureSet(...)`](#secureset)
+* [`secureRemove(...)`](#secureremove)
+* [`secureKeys()`](#securekeys)
+* [`secureClear()`](#secureclear)
+* [`secureMigrate(...)`](#securemigrate)
 * [Interfaces](#interfaces)
+* [Type Aliases](#type-aliases)
 
 </docgen-index>
 
@@ -74,6 +81,93 @@ openUrl(options: OpenURLOptions) => Promise<OpenURLResult>
 --------------------
 
 
+### secureGet(...)
+
+```typescript
+secureGet(options: { key: string; }) => Promise<{ value?: string; }>
+```
+
+Beveiligde opslag van strings (alleen iOS/Android): Keychain op iOS/Mac, Keystore op Android.
+`value` ontbreekt als de sleutel niet bestaat. Bestaat hij wel maar is hij niet leesbaar, dan volgt een fout
+met een <a href="#securestorageerrorcode">`SecureStorageErrorCode`</a> als `code`.
+
+| Param         | Type                          |
+| ------------- | ----------------------------- |
+| **`options`** | <code>{ key: string; }</code> |
+
+**Returns:** <code>Promise&lt;{ value?: string; }&gt;</code>
+
+--------------------
+
+
+### secureSet(...)
+
+```typescript
+secureSet(options: { key: string; value: string; }) => Promise<void>
+```
+
+| Param         | Type                                         |
+| ------------- | -------------------------------------------- |
+| **`options`** | <code>{ key: string; value: string; }</code> |
+
+--------------------
+
+
+### secureRemove(...)
+
+```typescript
+secureRemove(options: { key: string; }) => Promise<void>
+```
+
+Verwijdert ook een nog niet overgezette waarde van de vroegere Cordova-plugin.
+
+| Param         | Type                          |
+| ------------- | ----------------------------- |
+| **`options`** | <code>{ key: string; }</code> |
+
+--------------------
+
+
+### secureKeys()
+
+```typescript
+secureKeys() => Promise<{ keys: string[]; }>
+```
+
+**Returns:** <code>Promise&lt;{ keys: string[]; }&gt;</code>
+
+--------------------
+
+
+### secureClear()
+
+```typescript
+secureClear() => Promise<void>
+```
+
+Wist alleen de opslag van de app (service `my_app`), niet de rest van de Keychain/Keystore.
+
+--------------------
+
+
+### secureMigrate(...)
+
+```typescript
+secureMigrate(options?: SecureMigrateOptions | undefined) => Promise<SecureMigrateResult>
+```
+
+Android: zet waarden van cordova-plugin-secure-storage-echo over. Vraagt zo nodig eenmalig de
+schermvergrendeling. iOS gebruikt dezelfde Keychain-items als die plugin en zet niets over.
+
+| Param         | Type                                                                  |
+| ------------- | --------------------------------------------------------------------- |
+| **`options`** | <code><a href="#securemigrateoptions">SecureMigrateOptions</a></code> |
+
+**Returns:** <code>Promise&lt;<a href="#securemigrateresult">SecureMigrateResult</a>&gt;</code>
+
+--------------------
+
+
 ### Interfaces
 
 
@@ -110,5 +204,32 @@ Represents the data read from the clipboard.
 | Prop      | Type                |
 | --------- | ------------------- |
 | **`url`** | <code>string</code> |
+
+
+#### SecureMigrateResult
+
+| Prop           | Type                                                                                          | Description                                                                                         |
+| -------------- | --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| **`migrated`** | <code>string[]</code>                                                                         | Sleutels die nu zijn overgezet.                                                                     |
+| **`failed`**   | <code>{ [key: string]: <a href="#securestorageerrorcode">SecureStorageErrorCode</a>; }</code> | Sleutels die (nog) niet zijn overgezet, met de foutcode; ze blijven staan voor een volgende poging. |
+
+
+#### SecureMigrateOptions
+
+| Prop              | Type                | Description                                                     |
+| ----------------- | ------------------- | --------------------------------------------------------------- |
+| **`title`**       | <code>string</code> | Titel van de systeemvraag om de schermvergrendeling (Android).  |
+| **`description`** | <code>string</code> | Uitleg bij de systeemvraag om de schermvergrendeling (Android). |
+
+
+### Type Aliases
+
+
+#### SecureStorageErrorCode
+
+Foutcodes van de beveiligde opslag. De waarde bestaat, maar is nu niet leesbaar; behandel dit niet als
+"geen opgeslagen inlog". `LOCKED` alleen iOS, de overige behalve `OS_ERROR` en `INVALID_RECORD` alleen Android.
+
+<code>'LOCKED' | 'AUTH_REQUIRED' | 'AUTH_CANCELLED' | 'KEY_MISSING' | 'KEY_INVALIDATED' | 'DECRYPT_FAILED' | 'INVALID_RECORD' | 'OS_ERROR' | 'INVALID_ARGUMENT'</code>
 
 </docgen-api>
