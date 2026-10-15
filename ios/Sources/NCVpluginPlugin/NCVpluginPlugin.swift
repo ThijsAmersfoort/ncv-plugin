@@ -13,7 +13,13 @@ public class NCVpluginPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "info", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "ClipboardRead", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "ClipboardWrite", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "openUrl", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "openUrl", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "secureGet", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "secureSet", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "secureRemove", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "secureKeys", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "secureClear", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "secureMigrate", returnType: CAPPluginReturnPromise)
     ]
     private let implementation = NCVplugin()
 
@@ -81,6 +87,64 @@ public class NCVpluginPlugin: CAPPlugin, CAPBridgedPlugin {
                     "completed": completed
                 ])
             }
+        }
+    }
+
+    // MARK: Beveiligde opslag (de Keychain-logica staat in SecureStorage)
+
+    @objc func secureGet(_ call: CAPPluginCall) {
+        guard let key = call.getString("key") else {
+            return call.reject("key is verplicht", "INVALID_ARGUMENT")
+        }
+        secure(call) {
+            //ontbrekende sleutel: geen value
+            try SecureStorage.get(key).map { ["value": $0] } ?? [:]
+        }
+    }
+
+    @objc func secureSet(_ call: CAPPluginCall) {
+        guard let key = call.getString("key"), let value = call.getString("value") else {
+            return call.reject("key en value zijn verplicht", "INVALID_ARGUMENT")
+        }
+        secure(call) {
+            try SecureStorage.set(key, value)
+            return [:]
+        }
+    }
+
+    @objc func secureRemove(_ call: CAPPluginCall) {
+        guard let key = call.getString("key") else {
+            return call.reject("key is verplicht", "INVALID_ARGUMENT")
+        }
+        secure(call) {
+            try SecureStorage.remove(key)
+            return [:]
+        }
+    }
+
+    @objc func secureKeys(_ call: CAPPluginCall) {
+        secure(call) { ["keys": try SecureStorage.keys()] }
+    }
+
+    @objc func secureClear(_ call: CAPPluginCall) {
+        secure(call) {
+            try SecureStorage.clear()
+            return [:]
+        }
+    }
+
+    @objc func secureMigrate(_ call: CAPPluginCall) {
+        //Apple gebruikt dezelfde Keychain-items als de oude plugin: niets over te zetten
+        call.resolve(["migrated": [String](), "failed": [String: String]()])
+    }
+
+    private func secure(_ call: CAPPluginCall, _ actie: () throws -> [String: Any]) {
+        do {
+            call.resolve(try actie())
+        } catch let fout as SecureStorage.Fout {
+            call.reject(fout.message, fout.code)
+        } catch {
+            call.reject(error.localizedDescription, "OS_ERROR")
         }
     }
 }
