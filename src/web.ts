@@ -1,10 +1,13 @@
 import { WebPlugin } from '@capacitor/core';
 
-import type { NCVpluginPlugin, 
-              ReadResult, 
+import type { NCVpluginPlugin,
+              ReadResult,
               WriteOptions,
               OpenURLOptions,
               OpenURLResult,
+              SQLiteOpenResult,
+              SQLiteExecuteResult,
+              SQLiteBatchResult,
               SecureMigrateResult } from './definitions';
 
 declare global {
@@ -145,6 +148,27 @@ export class NCVpluginWeb extends WebPlugin implements NCVpluginPlugin {
   async openUrl(options: OpenURLOptions): Promise<OpenURLResult> {
     window.open(options.url, '_blank');
     return { completed: true };
+  }
+
+  //SQLite is er alleen native; de browserversies van de app gebruiken hun eigen databaseadapter
+  async sqliteOpen(): Promise<SQLiteOpenResult> {
+    throw this.unavailable('SQLite is alleen beschikbaar in de native app');
+  }
+
+  async sqliteExecute(): Promise<SQLiteExecuteResult> {
+    throw this.unavailable('SQLite is alleen beschikbaar in de native app');
+  }
+
+  async sqliteBatch(): Promise<SQLiteBatchResult> {
+    throw this.unavailable('SQLite is alleen beschikbaar in de native app');
+  }
+
+  async sqliteClose(): Promise<void> {
+    throw this.unavailable('SQLite is alleen beschikbaar in de native app');
+  }
+
+  async sqliteDelete(): Promise<void> {
+    throw this.unavailable('SQLite is alleen beschikbaar in de native app');
   }
 
   //beveiligde opslag ook alleen native; de online PWA logt in via de server

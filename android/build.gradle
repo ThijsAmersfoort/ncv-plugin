@@ -52,6 +52,8 @@ dependencies {
     implementation fileTree(dir: 'libs', include: ['*.jar'])
     implementation project(':capacitor-android')
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    //SQLite met FTS5 op alle Android-versies (de systeem-SQLite heeft geen FTS5); exacte, geteste versie
+    implementation "androidx.sqlite:sqlite-bundled:2.7.1"
     testImplementation "junit:junit:$junitVersion"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"

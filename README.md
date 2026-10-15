@@ -17,6 +17,11 @@ npx cap sync
 * [`ClipboardWrite(...)`](#clipboardwrite)
 * [`ClipboardRead()`](#clipboardread)
 * [`openUrl(...)`](#openurl)
+* [`sqliteOpen(...)`](#sqliteopen)
+* [`sqliteExecute(...)`](#sqliteexecute)
+* [`sqliteBatch(...)`](#sqlitebatch)
+* [`sqliteClose(...)`](#sqliteclose)
+* [`sqliteDelete(...)`](#sqlitedelete)
 * [`secureGet(...)`](#secureget)
 * [`secureSet(...)`](#secureset)
 * [`secureRemove(...)`](#secureremove)
@@ -77,6 +82,88 @@ openUrl(options: OpenURLOptions) => Promise<OpenURLResult>
 | **`options`** | <code><a href="#openurloptions">OpenURLOptions</a></code> |
 
 **Returns:** <code>Promise&lt;<a href="#openurlresult">OpenURLResult</a>&gt;</code>
+
+--------------------
+
+
+### sqliteOpen(...)
+
+```typescript
+sqliteOpen(options: SQLiteOpenOptions) => Promise<SQLiteOpenResult>
+```
+
+Opent een SQLite-database (alleen iOS/Android). Gebruik in de app `openSQLiteDatabase`.
+Is hetzelfde bestand al geopend (bijvoorbeeld na een herlaad van de WebView), dan komt de bestaande verbinding terug.
+
+| Param         | Type                                                            |
+| ------------- | --------------------------------------------------------------- |
+| **`options`** | <code><a href="#sqliteopenoptions">SQLiteOpenOptions</a></code> |
+
+**Returns:** <code>Promise&lt;<a href="#sqliteopenresult">SQLiteOpenResult</a>&gt;</code>
+
+--------------------
+
+
+### sqliteExecute(...)
+
+```typescript
+sqliteExecute(options: SQLiteExecuteOptions) => Promise<SQLiteExecuteResult>
+```
+
+Eén statement, buiten een transactie (ook `VACUUM` en PRAGMA's).
+
+| Param         | Type                                                                  |
+| ------------- | --------------------------------------------------------------------- |
+| **`options`** | <code><a href="#sqliteexecuteoptions">SQLiteExecuteOptions</a></code> |
+
+**Returns:** <code>Promise&lt;<a href="#sqliteexecuteresult">SQLiteExecuteResult</a>&gt;</code>
+
+--------------------
+
+
+### sqliteBatch(...)
+
+```typescript
+sqliteBatch(options: SQLiteBatchOptions) => Promise<SQLiteBatchResult>
+```
+
+Alle statements in één native transactie: alles of niets.
+
+| Param         | Type                                                              |
+| ------------- | ----------------------------------------------------------------- |
+| **`options`** | <code><a href="#sqlitebatchoptions">SQLiteBatchOptions</a></code> |
+
+**Returns:** <code>Promise&lt;<a href="#sqlitebatchresult">SQLiteBatchResult</a>&gt;</code>
+
+--------------------
+
+
+### sqliteClose(...)
+
+```typescript
+sqliteClose(options: { databaseId: string; }) => Promise<void>
+```
+
+Sluit na de al aangeboden aanvragen; daarna geeft de database `DB_CLOSED`.
+
+| Param         | Type                                 |
+| ------------- | ------------------------------------ |
+| **`options`** | <code>{ databaseId: string; }</code> |
+
+--------------------
+
+
+### sqliteDelete(...)
+
+```typescript
+sqliteDelete(options: { name: string; }) => Promise<void>
+```
+
+Verwijdert een gesloten `persistent`-database met journal/WAL-bestanden.
+
+| Param         | Type                           |
+| ------------- | ------------------------------ |
+| **`options`** | <code>{ name: string; }</code> |
 
 --------------------
 
@@ -206,6 +293,76 @@ Represents the data read from the clipboard.
 | **`url`** | <code>string</code> |
 
 
+#### SQLiteOpenResult
+
+| Prop                | Type                                      | Description                                                                                        |
+| ------------------- | ----------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| **`databaseId`**    | <code>string</code>                       |                                                                                                    |
+| **`readOnly`**      | <code>boolean</code>                      |                                                                                                    |
+| **`source`**        | <code>'bundle' \| 'copy' \| 'file'</code> | `bundle`: direct uit de appbundel, `copy`: beheerde kopie van de asset, `file`: gebruikersbestand. |
+| **`copied`**        | <code>boolean</code>                      | Bij deze opening gekopieerd (seed of nieuwe Android-basis).                                        |
+| **`reused`**        | <code>boolean</code>                      | Bestaande verbinding hergebruikt.                                                                  |
+| **`sqliteVersion`** | <code>string</code>                       |                                                                                                    |
+| **`userVersion`**   | <code>number</code>                       |                                                                                                    |
+
+
+#### SQLiteOpenOptions
+
+| Prop            | Type                                   | Description                                                                                                                                                                                                                         |
+| --------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`name`**      | <code>string</code>                    | Bestandsnaam zonder pad, bijvoorbeeld `NCVbasis.sqlite`.                                                                                                                                                                            |
+| **`mode`**      | <code>'bundled' \| 'persistent'</code> | `bundled`: alleen-lezen appinhoud uit `public/` (Apple direct uit de bundel, Android een beheerde kopie). `persistent`: schrijfbaar bestand op de vaste plek van de app (Apple `Library/LocalDatabase`, Android `getDatabasePath`). |
+| **`seedAsset`** | <code>string</code>                    | `persistent`: bestand in `public/` dat alleen bij een ontbrekende database wordt gekopieerd.                                                                                                                                        |
+| **`contentId`** | <code>string</code>                    | `bundled`, Android: SHA-256 (hex) van het bestand in de build; bepaalt of de beheerde kopie vernieuwd moet worden.                                                                                                                  |
+
+
+#### SQLiteExecuteResult
+
+| Prop       | Type                     |
+| ---------- | ------------------------ |
+| **`rows`** | <code>SQLiteRow[]</code> |
+
+
+#### SQLiteBlob
+
+| Prop        | Type                | Description |
+| ----------- | ------------------- | ----------- |
+| **`$blob`** | <code>string</code> | Base64      |
+
+
+#### SQLiteBigInt
+
+| Prop       | Type                | Description                                   |
+| ---------- | ------------------- | --------------------------------------------- |
+| **`$int`** | <code>string</code> | Decimale int64 buiten Number.MAX_SAFE_INTEGER |
+
+
+#### SQLiteExecuteOptions
+
+| Prop             | Type                                                          |
+| ---------------- | ------------------------------------------------------------- |
+| **`databaseId`** | <code>string</code>                                           |
+| **`sql`**        | <code>string</code>                                           |
+| **`values`**     | <code>SQLiteValue[]</code>                                    |
+| **`result`**     | <code><a href="#sqliteresultmode">SQLiteResultMode</a></code> |
+
+
+#### SQLiteBatchResult
+
+| Prop          | Type                       |
+| ------------- | -------------------------- |
+| **`results`** | <code>SQLiteRow[][]</code> |
+
+
+#### SQLiteBatchOptions
+
+| Prop             | Type                                                   | Description                                                                                   |
+| ---------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------- |
+| **`databaseId`** | <code>string</code>                                    |                                                                                               |
+| **`statements`** | <code>{ sql: string; values: SQLiteValue[]; }[]</code> |                                                                                               |
+| **`result`**     | <code>'none' \| 'all'</code>                           | `none`: schrijftransactie (`BEGIN IMMEDIATE`), `all`: rijen per statement (`BEGIN DEFERRED`). |
+
+
 #### SecureMigrateResult
 
 | Prop           | Type                                                                                          | Description                                                                                         |
@@ -223,6 +380,30 @@ Represents the data read from the clipboard.
 
 
 ### Type Aliases
+
+
+#### SQLiteRow
+
+<code><a href="#record">Record</a>&lt;string, <a href="#sqlitevalue">SQLiteValue</a>&gt;</code>
+
+
+#### Record
+
+Construct a type with a set of properties K of type T
+
+<code>{ [P in K]: T; }</code>
+
+
+#### SQLiteValue
+
+Waarde voor een parameter of kolom. BLOB en int64 buiten het veilige getalbereik krijgen een getagde vorm.
+
+<code>null | string | number | boolean | <a href="#sqliteblob">SQLiteBlob</a> | <a href="#sqlitebigint">SQLiteBigInt</a></code>
+
+
+#### SQLiteResultMode
+
+<code>'none' | 'first' | 'all'</code>
 
 
 #### SecureStorageErrorCode

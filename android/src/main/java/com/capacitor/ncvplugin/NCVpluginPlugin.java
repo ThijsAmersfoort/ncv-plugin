@@ -12,7 +12,10 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import org.json.JSONObject;
 
 @CapacitorPlugin(name = "NCVplugin")
 public class NCVpluginPlugin extends Plugin {
@@ -29,12 +32,88 @@ public class NCVpluginPlugin extends Plugin {
     }
 
     private Clipboard CBimplementation;
+    private SQLiteService sqlite;
     private SecureStorage secureStorage;
 
     @Override
     public void load() {
         CBimplementation = new Clipboard(getContext());
+        sqlite = SQLiteService.gedeeld(getContext());
         secureStorage = new SecureStorage(getContext().getApplicationContext());
+    }
+
+    // SQLite (de SQL-logica staat in SQLiteService en SQLiteVerbinding)
+
+    @PluginMethod
+    public void sqliteOpen(PluginCall call) {
+        String name = call.getString("name");
+        String mode = call.getString("mode");
+        if (name == null || mode == null) {
+            call.reject("name en mode zijn verplicht", "INVALID_ARGUMENT");
+            return;
+        }
+        sqlite.open(name, mode, call.getString("seedAsset"), call.getString("contentId"), sqliteAfronden(call));
+    }
+
+    @PluginMethod
+    public void sqliteExecute(PluginCall call) {
+        String id = call.getString("databaseId");
+        String sql = call.getString("sql");
+        SQLiteVerbinding.Resultaat resultaat = SQLiteVerbinding.Resultaat.van(call.getString("result", "none"));
+        if (id == null || sql == null || resultaat == null) {
+            call.reject("databaseId, sql en result zijn verplicht", "INVALID_ARGUMENT");
+            return;
+        }
+        sqlite.uitvoeren(id, sql, call.getArray("values", new JSArray()), resultaat, sqliteAfronden(call));
+    }
+
+    @PluginMethod
+    public void sqliteBatch(PluginCall call) {
+        String id = call.getString("databaseId");
+        JSArray lijst = call.getArray("statements");
+        SQLiteVerbinding.Resultaat resultaat = SQLiteVerbinding.Resultaat.van(call.getString("result", "none"));
+        if (id == null || lijst == null || resultaat == null || resultaat == SQLiteVerbinding.Resultaat.FIRST) {
+            call.reject("databaseId, statements en result zijn verplicht", "INVALID_ARGUMENT");
+            return;
+        }
+        List<SQLiteVerbinding.Statement> statements = new ArrayList<>();
+        for (int i = 0; i < lijst.length(); i++) {
+            JSONObject item = lijst.optJSONObject(i);
+            String sql = item == null ? null : item.optString("sql", null);
+            if (sql == null) {
+                call.reject("Elk statement heeft sql nodig", "INVALID_ARGUMENT");
+                return;
+            }
+            statements.add(new SQLiteVerbinding.Statement(sql, item.optJSONArray("values")));
+        }
+        sqlite.batch(id, statements, resultaat, sqliteAfronden(call));
+    }
+
+    @PluginMethod
+    public void sqliteClose(PluginCall call) {
+        String id = call.getString("databaseId");
+        if (id == null) {
+            call.reject("databaseId is verplicht", "INVALID_ARGUMENT");
+            return;
+        }
+        sqlite.sluiten(id, sqliteAfronden(call));
+    }
+
+    @PluginMethod
+    public void sqliteDelete(PluginCall call) {
+        String name = call.getString("name");
+        if (name == null) {
+            call.reject("name is verplicht", "INVALID_ARGUMENT");
+            return;
+        }
+        sqlite.verwijderen(name, sqliteAfronden(call));
+    }
+
+    private static SQLiteService.Klaar sqliteAfronden(PluginCall call) {
+        return (resultaat, fout) -> {
+            if (fout == null) call.resolve(resultaat);
+            else call.reject(fout.getMessage(), fout.code, null, fout.data());
+        };
     }
 
     @PluginMethod
