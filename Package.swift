@@ -19,7 +19,8 @@ let package = Package(
                 .product(name: "Capacitor", package: "capacitor-swift-pm"),
                 .product(name: "Cordova", package: "capacitor-swift-pm")
             ],
-            path: "ios/Sources/NCVpluginPlugin"),
+            path: "ios/Sources/NCVpluginPlugin",
+            linkerSettings: [.linkedLibrary("sqlite3")]),//SQLite van het systeem, geen eigen engine
         .testTarget(
             name: "NCVpluginPluginTests",
             dependencies: ["NCVpluginPlugin"],

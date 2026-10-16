@@ -14,6 +14,11 @@ public class NCVpluginPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "ClipboardRead", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "ClipboardWrite", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "openUrl", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "sqliteOpen", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "sqliteExecute", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "sqliteBatch", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "sqliteClose", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "sqliteDelete", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "secureGet", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "secureSet", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "secureRemove", returnType: CAPPluginReturnPromise),
@@ -22,6 +27,72 @@ public class NCVpluginPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "secureMigrate", returnType: CAPPluginReturnPromise)
     ]
     private let implementation = NCVplugin()
+    private let sqlite = SQLiteService.gedeeld
+
+    // MARK: SQLite (de SQL-logica staat in SQLiteService en SQLiteVerbinding)
+
+    @objc func sqliteOpen(_ call: CAPPluginCall) {
+        guard let name = call.getString("name"), let mode = call.getString("mode") else {
+            return ongeldig(call, "name en mode zijn verplicht")
+        }
+        sqlite.open(naam: name, modus: mode, seed: call.getString("seedAsset")) { self.afronden(call, $0) }
+    }
+
+    @objc func sqliteExecute(_ call: CAPPluginCall) {
+        guard let id = call.getString("databaseId"), let sql = call.getString("sql"),
+              let resultaat = SQLiteResultaat(rawValue: call.getString("result") ?? "none") else {
+            return ongeldig(call, "databaseId, sql en result zijn verplicht")
+        }
+        let waarden = call.options["values"] as? [Any] ?? []
+        sqlite.uitvoeren(id: id, sql: sql, waarden: waarden, resultaat: resultaat) { uitkomst in
+            self.afronden(call, uitkomst.map { resultaat == .none ? [:] : ["rows": $0] })
+        }
+    }
+
+    @objc func sqliteBatch(_ call: CAPPluginCall) {
+        guard let id = call.getString("databaseId"), let lijst = call.options["statements"] as? [[String: Any]],
+              let resultaat = SQLiteResultaat(rawValue: call.getString("result") ?? "none"), resultaat != .first else {
+            return ongeldig(call, "databaseId, statements en result zijn verplicht")
+        }
+        var statements: [(sql: String, waarden: [Any])] = []
+        for item in lijst {
+            guard let sql = item["sql"] as? String else {
+                return ongeldig(call, "Elk statement heeft sql nodig")
+            }
+            statements.append((sql, item["values"] as? [Any] ?? []))
+        }
+        sqlite.batch(id: id, statements: statements, resultaat: resultaat) { uitkomst in
+            self.afronden(call, uitkomst.map { resultaat == .none ? [:] : ["results": $0] })
+        }
+    }
+
+    @objc func sqliteClose(_ call: CAPPluginCall) {
+        guard let id = call.getString("databaseId") else {
+            return ongeldig(call, "databaseId is verplicht")
+        }
+        sqlite.sluiten(id: id) { self.afronden(call, $0) }
+    }
+
+    @objc func sqliteDelete(_ call: CAPPluginCall) {
+        guard let name = call.getString("name") else {
+            return ongeldig(call, "name is verplicht")
+        }
+        sqlite.verwijderen(naam: name) { self.afronden(call, $0) }
+    }
+
+    private func ongeldig(_ call: CAPPluginCall, _ melding: String) {
+        call.reject(melding, "INVALID_ARGUMENT")
+    }
+
+    private func afronden(_ call: CAPPluginCall, _ uitkomst: Result<[String: Any], Error>) {
+        switch uitkomst {
+        case .success(let data):
+            call.resolve(data)
+        case .failure(let fout):
+            let sqliteFout = fout as? SQLiteFout ?? SQLiteFout("SQLITE_ERROR", fout.localizedDescription)
+            call.reject(sqliteFout.message, sqliteFout.code, nil, sqliteFout.data)
+        }
+    }
 
     @objc func info(_ call: CAPPluginCall) {
         var platform = "ios"
