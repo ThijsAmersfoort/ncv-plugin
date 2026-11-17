@@ -45,7 +45,8 @@ import UniformTypeIdentifiers
         ).string
     }
 
-    func ClipboardWrite(content: String, ofType type: ContentType) -> Result<Void, Error> {
+    /// plainText: de platte tekst bij html (van de app); zonder die waarde uit de HTML afgeleid (NSAttributedString, main thread)
+    func ClipboardWrite(content: String, ofType type: ContentType, plainText meegegeven: String? = nil) -> Result<Void, Error> {
         switch type {
         case ContentType.string:
             UIPasteboard.general.string = content
@@ -82,7 +83,7 @@ import UniformTypeIdentifiers
             //CAPLog.print(wrappedHTML,htmlData)*/
             
             // Fallback plaintext — gebruik de originele content als plainTextFromHTML faalt
-            let plainText = plainTextFromHTML(wrappedHTML) ?? wrappedHTML.replacingOccurrences(
+            let plainText = meegegeven ?? plainTextFromHTML(wrappedHTML) ?? wrappedHTML.replacingOccurrences(
                 of: "<[^>]+>",
                 with: "",
                 options: .regularExpression

@@ -142,7 +142,14 @@ class SecureStorage {
         for (String key : legacy.keys()) {
             try {
                 if (prefs.contains(key)) {
-                    legacy.remove(key); //later opgeslagen, dus nieuwer dan de oude waarde
+                    //later opgeslagen, dus nieuwer dan de oude waarde; maar alleen als die te lezen is (X6): anders is de oude
+                    //de laatste leesbare kopie en blijft hij staan
+                    try {
+                        decrypt(key, prefs.getAll().get(key));
+                        legacy.remove(key);
+                    } catch (SecureStorageException e) {
+                        result.failed.put(key, e.code);
+                    }
                     continue;
                 }
                 String value = legacy.get(key);
@@ -223,21 +230,34 @@ class SecureStorage {
         }
     }
 
+    /** getKey, en bij een UnrecoverableKeyException nog één keer met een opnieuw geladen Keystore (een tijdelijke fout) */
+    private static Key haalSleutel(KeyStore keyStore) throws GeneralSecurityException, IOException {
+        try {
+            return keyStore.getKey(NAAM, null);
+        } catch (UnrecoverableKeyException e) {
+            KeyStore opnieuw = KeyStore.getInstance("AndroidKeyStore");
+            opnieuw.load(null);
+            return opnieuw.getKey(NAAM, null);
+        }
+    }
+
     /** De AES-sleutel; maakt hem alleen aan voor het opslaan (een lege opslag heeft geen sleutel nodig) */
     private SecretKey sleutel(boolean maak) throws SecureStorageException {
         try {
             KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
             keyStore.load(null);
             try {
-                Key key = keyStore.getKey(NAAM, null);
+                Key key = haalSleutel(keyStore);
                 if (key instanceof SecretKey) {
                     return (SecretKey) key;
                 }
             } catch (UnrecoverableKeyException e) {
-                if (!maak) {
+                //X6: een Keystore-fout bij het opslaan bewijst niet dat de sleutel verloren is. Voorheen werd hij dan gewist en
+                //was alles wat ermee versleuteld was onleesbaar (bv. email na een fout bij pw). Alleen een nieuwe sleutel als er
+                //niets meer met de oude te lezen valt: geen opgeslagen waarden. Anders weigeren; na clear() lukt het weer
+                if (!maak || !prefs.getAll().isEmpty()) {
                     throw new SecureStorageException(SecureStorageException.KEY_INVALIDATED, "De sleutel van de opslag is onbruikbaar", e);
                 }
-                //onherstelbaar: wat ermee versleuteld is, is al verloren; voor nieuwe waarden een nieuwe sleutel
                 keyStore.deleteEntry(NAAM);
             }
             if (!maak) {

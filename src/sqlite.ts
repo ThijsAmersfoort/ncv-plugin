@@ -3,6 +3,7 @@ import type {
   SQLiteOpenResult,
   SQLiteResultMode,
   SQLiteRow,
+  SQLiteRows,
   SQLiteStatement,
   SQLiteValue,
 } from './definitions';
@@ -59,6 +60,23 @@ function kopieerWaarden(waarden?: SQLiteValue[]): SQLiteValue[] {
   return Array.from(waarden, kopieerWaarde);
 }
 
+/**
+ * Rijen van de native kant als objecten: {columns, values} (een array per rij, de helft van de JSON over de bridge) of de oude
+ * vorm met een object per rij. Bij dubbele kolomnamen wint de laatste, zoals voorheen.
+ */
+export function naarObjecten(uitkomst: Partial<SQLiteRows> | SQLiteRow[] | undefined | null): SQLiteRow[] {
+  if (!uitkomst) return [];
+  if (Array.isArray(uitkomst)) return uitkomst;
+  const { columns, values } = uitkomst;
+  if (!columns || !values) return [];
+  const aantal = columns.length;
+  return values.map((rij) => {
+    const object: SQLiteRow = {};
+    for (let i = 0; i < aantal; i++) object[columns[i]] = rij[i];
+    return object;
+  });
+}
+
 function kopieerStatement(statement: SQLiteStatement): Transport {
   if (typeof statement == 'string') return { sql: statement, values: [] };
   if (Array.isArray(statement) && typeof statement[0] == 'string')
@@ -79,8 +97,8 @@ class Database implements SQLiteDatabase {
 
   private uitvoeren = async (sql: string, waarden: SQLiteValue[] | undefined, result: SQLiteResultMode): Promise<SQLiteRow[]> => {
     const values = kopieerWaarden(waarden);
-    const { rows } = await NCVplugin.sqliteExecute({ databaseId: this.id(), sql, values, result });
-    return rows ?? [];
+    const res = await NCVplugin.sqliteExecute({ databaseId: this.id(), sql, values, result });
+    return naarObjecten(res.columns ? res : res.rows);
   };
 
   sql = async (sql: string, values?: SQLiteValue[]): Promise<void> => {
@@ -104,7 +122,7 @@ class Database implements SQLiteDatabase {
     const kopie = Array.from(statements, kopieerStatement);
     if (!kopie.length) return [];
     const { results } = await NCVplugin.sqliteBatch({ databaseId: this.id(), statements: kopie, result: 'all' });
-    return results ?? [];
+    return (results ?? []).map(naarObjecten);
   };
 
   close = async (): Promise<void> => {
@@ -116,8 +134,8 @@ class Database implements SQLiteDatabase {
 
 /** Opent een database via de native plugin (iOS/Android); op het web volgt een `UNAVAILABLE`-fout. */
 export async function openSQLiteDatabase(options: SQLiteOpenOptions): Promise<SQLiteDatabase> {
-  const { name, mode, seedAsset, contentId } = options;
-  return new Database(await NCVplugin.sqliteOpen({ name, mode, seedAsset, contentId }));
+  const { name, mode, seedAsset, contentId, wal } = options;
+  return new Database(await NCVplugin.sqliteOpen({ name, mode, seedAsset, contentId, wal }));
 }
 
 /** Verwijdert een gesloten `persistent`-database (met journal/WAL-bestanden). */

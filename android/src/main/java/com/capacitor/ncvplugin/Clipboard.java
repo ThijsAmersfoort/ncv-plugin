@@ -52,11 +52,11 @@ public class Clipboard {
      * @param htmlContent The HTML content to be written to the clipboard.
      * @return A response indicating the success status of the write request.
      */
-    public ClipboardWriteResponse writeHtml(String label, String htmlContent) {
+    public ClipboardWriteResponse writeHtml(String label, String htmlContent, String text) {
         if (clipboard != null) {
             try {
-                // Create plain text fallback by stripping HTML tags
-                String plainText = Html.fromHtml(htmlContent, Html.FROM_HTML_MODE_LEGACY).toString();
+                // platte tekst van de app, anders uit de HTML
+                String plainText = text != null ? text : Html.fromHtml(htmlContent, Html.FROM_HTML_MODE_LEGACY).toString();
                 
                 // Create ClipData with both HTML and plain text
                 ClipData data = ClipData.newHtmlText(label, plainText, htmlContent);
@@ -113,8 +113,10 @@ public class Clipboard {
             }
 
             // Check if it's a data URL (for images)
-            if (value != null && value.toString().startsWith("data:")) {
-                type = value.toString().split(";")[0].split(":")[1];
+            //X9: alleen een echte data-URL (data:type;...): precies "data:" gaf een ArrayIndexOutOfBounds, en een fout die
+            //uit een pluginmethode ontsnapt, stopt op Android het proces
+            if (value != null && value.toString().matches("(?s)^data:[^;,]+[;,].*")) {
+                type = value.toString().substring(5).split("[;,]")[0];
             }
 
             clipboardData.setType(type);

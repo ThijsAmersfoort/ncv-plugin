@@ -42,12 +42,12 @@ class SQLiteServiceTests: XCTestCase {
 
     @discardableResult
     private func sql(_ id: String, _ sql: String, _ waarden: [Any] = [], _ resultaat: SQLiteResultaat = .all) throws -> [[String: Any]] {
-        try wacht { self.service.uitvoeren(id: id, sql: sql, waarden: waarden, resultaat: resultaat, klaar: $0) }.get()
+        try wacht { self.service.uitvoeren(id: id, sql: sql, waarden: waarden, resultaat: resultaat, klaar: $0) }.get().objecten
     }
 
     @discardableResult
     private func batch(_ id: String, _ statements: [(sql: String, waarden: [Any])], _ resultaat: SQLiteResultaat = .none) throws -> [[[String: Any]]] {
-        try wacht { self.service.batch(id: id, statements: statements, resultaat: resultaat, klaar: $0) }.get()
+        try wacht { self.service.batch(id: id, statements: statements, resultaat: resultaat, klaar: $0) }.get().map { $0.objecten }
     }
 
     private func sluit(_ id: String) throws {
@@ -272,6 +272,73 @@ class SQLiteServiceTests: XCTestCase {
         try verwijder("weg.sqlite")//ontbrekend bestand is geen fout
     }
 
+    func testStatementcache() throws {
+        let db = id(try open("cache.sqlite"))
+        try sql(db, "CREATE TABLE t (x, y)")
+        //hetzelfde statement met andere waarden: geen oude bindingen (ontbrekende waarden worden NULL)
+        try sql(db, "INSERT INTO t VALUES (?, ?)", [1, "a"])
+        try sql(db, "INSERT INTO t VALUES (?, ?)", [2])
+        XCTAssertTrue(try sql(db, "SELECT y FROM t WHERE x = 2").first?["y"] is NSNull)
+        //sqlRow stopt na de eerste rij: het statement wordt gereset, dus schrijven, DROP en VACUUM gaan daarna gewoon
+        XCTAssertEqual(try sql(db, "SELECT x FROM t ORDER BY x", [], .first).first?["x"] as? Int, 1)
+        try sql(db, "INSERT INTO t VALUES (3, 'c')")
+        try sql(db, "CREATE TABLE weg (z)")
+        try sql(db, "SELECT * FROM weg")
+        try sql(db, "DROP TABLE weg")
+        XCTAssertEqual(fout { try self.sql(db, "SELECT * FROM weg") }?.code, "SQL_ERROR")
+        try sql(db, "VACUUM", [], .none)
+        //een bewaarde SELECT * na een nieuwe kolom: de kolommen van na het opnieuw voorbereiden
+        XCTAssertEqual(try sql(db, "SELECT * FROM t WHERE x = 1").first?.count, 2)
+        try sql(db, "ALTER TABLE t ADD COLUMN z DEFAULT 7")
+        XCTAssertEqual(try sql(db, "SELECT * FROM t WHERE x = 1").first?["z"] as? Int, 7)
+        XCTAssertEqual(try sql(db, "SELECT * FROM t WHERE x = 1", [], .first).first?.count, 3)
+        //meer verschillende statements dan de cache groot is
+        for i in 0..<(SQLiteVerbinding.cacheGrootte + 8) {
+            XCTAssertEqual(try sql(db, "SELECT \(i) AS n").first?["n"] as? Int, i)
+        }
+        XCTAssertEqual(try sql(db, "SELECT count(*) AS n FROM t").first?["n"] as? Int, 3)
+        //een lange statement (niet in de cache) werkt ook
+        let lang = "SELECT count(*) AS n FROM t WHERE x IN (" + (0..<2000).map(String.init).joined(separator: ",") + ")"
+        XCTAssertEqual(try sql(db, lang).first?["n"] as? Int, 3)
+        try sluit(db)
+    }
+
+    func testRijenAlsArrays() throws {
+        let db = id(try open("arrays.sqlite"))
+        let rijen = try wacht { self.service.uitvoeren(id: db, sql: "SELECT 1 AS a, 'x' AS b, 2 AS a", waarden: [], resultaat: .all, klaar: $0) }.get()
+        XCTAssertEqual(rijen.kolommen, ["a", "b", "a"])
+        XCTAssertEqual(rijen.bridge["columns"] as? [String], ["a", "b", "a"])
+        XCTAssertEqual((rijen.bridge["values"] as? [[Any]])?.first?.count, 3)
+        //dubbele kolomnaam: de laatste wint, zoals bij een object per rij
+        XCTAssertEqual(rijen.objecten.first?["a"] as? Int, 2)
+        let leeg = try wacht { self.service.uitvoeren(id: db, sql: "SELECT 1 AS a WHERE 0", waarden: [], resultaat: .all, klaar: $0) }.get()
+        XCTAssertEqual(leeg.kolommen, ["a"])
+        XCTAssertTrue(leeg.waarden.isEmpty)
+        try sluit(db)
+    }
+
+    func testWalEnCheckpoint() throws {
+        let info = try wacht { self.service.open(naam: "wal.sqlite", modus: "persistent", seed: nil, wal: true, klaar: $0) }.get()
+        XCTAssertEqual(info["journalMode"] as? String, "wal")
+        let db = id(info)
+        try sql(db, "CREATE TABLE t (x)")
+        try batch(db, (0..<200).map { ("INSERT INTO t VALUES (?)", [$0]) })
+        let walPad = data.appendingPathComponent("wal.sqlite-wal").path
+        XCTAssertGreaterThan((try FileManager.default.attributesOfItem(atPath: walPad)[.size] as? NSNumber)?.intValue ?? 0, 0)
+        let klaar = expectation(description: "checkpoint")
+        service.checkpointAlles { klaar.fulfill() }
+        wait(for: [klaar], timeout: 10)
+        XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: walPad)[.size] as? NSNumber)?.intValue, 0)
+        XCTAssertEqual(try sql(db, "SELECT count(*) AS n FROM t").first?["n"] as? Int, 200)
+        try sluit(db)
+        //zonder wal blijft het de vaste instelling
+        let gewoon = try open("gewoon.sqlite")
+        XCTAssertEqual(gewoon["journalMode"] as? String, "delete")
+        try sluit(id(gewoon))
+        try verwijder("wal.sqlite")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: walPad))
+    }
+
     /// De echte databases uit de app, als de app-map naast de plugin staat.
     func testAppDatabases() throws {
         var publicMap = URL(fileURLWithPath: #filePath)
@@ -288,7 +355,7 @@ class SQLiteServiceTests: XCTestCase {
             let rijen = try wacht {
                 app.uitvoeren(id: basis, sql: "SELECT rowid, bm25(\(tabel)) AS score FROM \(tabel) WHERE \(tabel) MATCH 'God' ORDER BY rank LIMIT 3", waarden: [], resultaat: .all, klaar: $0)
             }.get()
-            XCTAssertFalse(rijen.isEmpty, tabel)
+            XCTAssertFalse(rijen.waarden.isEmpty, tabel)
         }
         let user = try wacht { app.open(naam: "user.sqlite", modus: "persistent", seed: "user.sqlite", klaar: $0) }.get()
         XCTAssertEqual(user["copied"] as? Bool, true)
@@ -301,8 +368,8 @@ class SQLiteServiceTests: XCTestCase {
         let treffers = try wacht {
             app.uitvoeren(id: userId, sql: "SELECT rowid FROM notesFTS WHERE notesFTS MATCH 'genadeproef'", waarden: [], resultaat: .all, klaar: $0)
         }.get()
-        XCTAssertEqual(treffers.count, 1)
+        XCTAssertEqual(treffers.waarden.count, 1)
         let controle = try wacht { app.uitvoeren(id: userId, sql: "PRAGMA quick_check", waarden: [], resultaat: .first, klaar: $0) }.get()
-        XCTAssertEqual(controle.first?["quick_check"] as? String, "ok")
+        XCTAssertEqual(controle.objecten.first?["quick_check"] as? String, "ok")
     }
 }

@@ -11,8 +11,11 @@ import com.getcapacitor.JSObject;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -50,11 +53,57 @@ final class SQLiteVerbinding {
         }
     }
 
+    /**
+     * Rijen als kolomnamen plus een array per rij: over de bridge de helft van de JSON van een object per rij (de facade sqlite.ts
+     * bouwt de objecten terug). Bij dubbele kolomnamen wint de laatste, zoals bij een object per rij.
+     */
+    static final class Rijen {
+
+        final List<String> kolommen;
+        final List<JSONArray> waarden;
+
+        Rijen(List<String> kolommen, List<JSONArray> waarden) {
+            this.kolommen = kolommen;
+            this.waarden = waarden;
+        }
+
+        JSObject naarBridge() {
+            return new JSObject().put("columns", new JSONArray(kolommen)).put("values", new JSONArray(waarden));
+        }
+
+        List<JSObject> objecten() {
+            List<JSObject> uit = new ArrayList<>(waarden.size());
+            for (JSONArray rij : waarden) {
+                JSObject object = new JSObject();
+                for (int kolom = 0; kolom < kolommen.size(); kolom++) object.put(kolommen.get(kolom), rij.opt(kolom));
+                uit.add(object);
+            }
+            return uit;
+        }
+    }
+
     //grootste geheel getal dat JavaScript exact kent; daarbuiten {"$int": "..."}
     private static final long MAX_VEILIG = 9007199254740991L;
 
+    /**
+     * Voorbereide statements per SQL-tekst (LRU): de gedeelde routes voeren steeds dezelfde SQL uit. Na elk gebruik reset() en
+     * clearBindings(), zodat een statement geen leesslot vasthoudt en geen oude waarden meeneemt. Lange SQL (een lange IN (...))
+     * wordt niet bewaard: die komt zelden terug en kost veel geheugen.
+     */
+    static final int CACHE_GROOTTE = 32;
+    static final int MAX_CACHE_LENGTE = 4096;
+
     final String naam;
     private SQLiteConnection db;
+    private boolean wal = false;
+    private final LinkedHashMap<String, SQLiteStatement> cache = new LinkedHashMap<String, SQLiteStatement>(CACHE_GROOTTE, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, SQLiteStatement> oudste) {
+            if (size() <= CACHE_GROOTTE) return false;
+            sluitStil(oudste.getValue());
+            return true;
+        }
+    };
 
     SQLiteVerbinding(BundledSQLiteDriver driver, String pad, int flags, String naam) throws SQLiteFout {
         this.naam = naam;
@@ -68,7 +117,17 @@ final class SQLiteVerbinding {
         }
     }
 
+    private static void sluitStil(SQLiteStatement statement) {
+        try {
+            statement.close();
+        } catch (RuntimeException ignored) {}
+    }
+
     void sluiten() {
+        for (Iterator<SQLiteStatement> it = cache.values().iterator(); it.hasNext(); ) {
+            sluitStil(it.next());
+            it.remove();
+        }
         if (db != null) {
             try {
                 db.close();
@@ -79,13 +138,45 @@ final class SQLiteVerbinding {
 
     /** Vaste instellingen, gelijk aan de compileeropties van de vorige Cordova-engine (SYNCHRONOUS=3, TEMP_STORE=2). */
     void instellen(boolean schrijfbaar) throws SQLiteFout {
+        instellen(schrijfbaar, false);
+    }
+
+    /**
+     * wal: journal_mode WAL met synchronous NORMAL (het bestand blijft heel na een crash van app of systeem; alleen de laatste
+     * transacties kunnen bij stroomverlies terugvallen). Lukt WAL niet, dan blijft het de vaste instelling.
+     */
+    void instellen(boolean schrijfbaar, boolean metWal) throws SQLiteFout {
         exec("PRAGMA temp_store = MEMORY");
         if (schrijfbaar) {
-            exec("PRAGMA synchronous = EXTRA");
+            List<JSObject> modus = metWal ? uitvoeren("PRAGMA journal_mode = WAL", null, Resultaat.FIRST) : null;
+            if (modus != null && !modus.isEmpty() && "wal".equalsIgnoreCase(modus.get(0).optString("journal_mode"))) {
+                wal = true;
+                exec("PRAGMA synchronous = NORMAL");
+            } else {
+                exec("PRAGMA synchronous = EXTRA");
+            }
             exec("PRAGMA foreign_keys = OFF");
         }
         //leest het schema: een bestand dat geen database is valt hier al af
         uitvoeren("SELECT count(*) FROM sqlite_master", null, Resultaat.NONE);
+    }
+
+    boolean isWal() {
+        return wal;
+    }
+
+    /** Zet de WAL over in de database en maakt hem leeg (bij naar de achtergrond gaan). Buiten WAL niets. */
+    void checkpoint() throws SQLiteFout {
+        if (wal) uitvoeren("PRAGMA wal_checkpoint(TRUNCATE)", null, Resultaat.NONE);
+    }
+
+    String journalMode() {
+        try {
+            List<JSObject> rij = uitvoeren("PRAGMA journal_mode", null, Resultaat.FIRST);
+            return rij.isEmpty() ? "" : rij.get(0).optString("journal_mode");
+        } catch (SQLiteFout e) {
+            return "";
+        }
     }
 
     /** Controleert een kandidaatbestand (het schema is leesbaar) en sluit de verbinding weer. */
@@ -118,44 +209,77 @@ final class SQLiteVerbinding {
 
     /**
      * Voert één statement uit. Rijen alleen bij FIRST/ALL; het statement loopt altijd tot het einde.
-     * AndroidX leest alleen het eerste statement uit de string (zoals de vorige Cordova-engine); meer statements zijn hier niet te herkennen.
+     * AndroidX leest alleen het eerste statement uit de string: meer statements geven MULTIPLE_STATEMENTS, zoals op iOS (X7). Voorheen
+     * liep alleen het eerste en kwam er succes terug, zodat bv. een migratie "ALTER ...; UPDATE ..." half liep.
      */
     List<JSObject> uitvoeren(String sql, JSONArray waarden, Resultaat resultaat) throws SQLiteFout {
+        return uitvoerenRijen(sql, waarden, resultaat).objecten();
+    }
+
+    Rijen uitvoerenRijen(String sql, JSONArray waarden, Resultaat resultaat) throws SQLiteFout {
         SQLiteConnection verbinding = handle();
-        List<JSObject> rijen = new ArrayList<>();
-        if (sql.trim().isEmpty()) return rijen;
-        SQLiteStatement statement;
-        try {
-            statement = verbinding.prepare(sql);
-        } catch (SQLException e) {
-            throw SQLiteFout.van(e, naam);
+        List<JSONArray> rijen = new ArrayList<>();
+        if (sql.trim().isEmpty()) return new Rijen(new ArrayList<>(), rijen);
+        SQLiteStatement statement = cache.get(sql);
+        boolean bewaard = statement != null;
+        if (statement == null) {
+            if (!alleenRest(sql, eindeEersteStatement(sql))) {
+                throw new SQLiteFout("MULTIPLE_STATEMENTS", "Meer dan één SQL-statement in één aanroep", naam);
+            }
+            try {
+                statement = verbinding.prepare(sql);
+            } catch (SQLException e) {
+                throw SQLiteFout.van(e, naam);
+            }
+            if (sql.length() <= MAX_CACHE_LENGTE) {
+                cache.put(sql, statement);
+                bewaard = true;
+            }
         }
         try {
             binden(statement, waarden);
-            String[] namen = null;
-            while (statement.step()) {
+            //de kolommen pas na de eerste stap: een bewaard statement wordt na een schemawijziging (ALTER TABLE onder een
+            //SELECT *) in step() opnieuw voorbereid, en de kolommen van daarvoor kloppen dan niet meer
+            List<String> namen = null;
+            //sqlRow: een SELECT hoeft na de eerste rij niet verder; andere statements lopen tot het einde
+            boolean stopNaEerste = resultaat == Resultaat.FIRST && isSelect(sql);
+            while (true) {
+                boolean heeftRij = statement.step();
+                if (namen == null) namen = statement.getColumnNames();
+                if (!heeftRij) break;
                 if (resultaat == Resultaat.ALL || (resultaat == Resultaat.FIRST && rijen.isEmpty())) {
-                    if (namen == null) namen = statement.getColumnNames().toArray(new String[0]);
-                    JSObject rij = new JSObject();
-                    for (int kolom = 0; kolom < namen.length; kolom++) {
-                        rij.put(namen[kolom], waarde(statement, kolom));
+                    JSONArray rij = new JSONArray();
+                    for (int kolom = 0; kolom < namen.size(); kolom++) {
+                        rij.put(waarde(statement, kolom));
                     }
                     rijen.add(rij);
+                    if (stopNaEerste) break;
                 }
             }
-            return rijen;
+            return new Rijen(namen, rijen);
         } catch (SQLException e) {
             throw SQLiteFout.van(e, naam);
         } finally {
-            statement.close();
+            if (bewaard) {
+                try {
+                    statement.reset();
+                    statement.clearBindings();
+                } catch (RuntimeException e) {
+                    //niet meer bruikbaar: uit de cache
+                    cache.remove(sql);
+                    sluitStil(statement);
+                }
+            } else {
+                sluitStil(statement);
+            }
         }
     }
 
     /** Alle statements in één transactie: BEGIN IMMEDIATE om te schrijven, BEGIN DEFERRED voor rijen per statement. */
-    List<List<JSObject>> batch(List<Statement> statements, Resultaat resultaat) throws SQLiteFout {
+    List<Rijen> batch(List<Statement> statements, Resultaat resultaat) throws SQLiteFout {
         SQLiteConnection verbinding = handle();
         exec(resultaat == Resultaat.NONE ? "BEGIN IMMEDIATE" : "BEGIN DEFERRED");
-        List<List<JSObject>> uitkomst = new ArrayList<>();
+        List<Rijen> uitkomst = new ArrayList<>();
         try {
             for (int index = 0; index < statements.size(); index++) {
                 Statement statement = statements.get(index);
@@ -165,7 +289,7 @@ final class SQLiteVerbinding {
                     throw fout;
                 }
                 try {
-                    List<JSObject> rijen = uitvoeren(statement.sql, statement.waarden, resultaat);
+                    Rijen rijen = uitvoerenRijen(statement.sql, statement.waarden, resultaat);
                     if (resultaat != Resultaat.NONE) uitkomst.add(rijen);
                 } catch (SQLiteFout fout) {
                     fout.statementIndex = index;
@@ -185,6 +309,120 @@ final class SQLiteVerbinding {
             terugdraaien(verbinding);
             throw fout;
         }
+    }
+
+    /**
+     * Index direct na het eerste statement (na zijn puntkomma), of de lengte van de string. Houdt rekening met strings, '"', `, [..],
+     * commentaar en de puntkomma's binnen CREATE [TEMP] TRIGGER ... BEGIN ... END (daar eindigt pas END; het statement), zoals
+     * sqlite3_complete.
+     */
+    static int eindeEersteStatement(String sql) {
+        int i = 0;
+        int n = sql.length();
+        List<String> eerste = new ArrayList<>(); //de eerste woorden, om CREATE TRIGGER te herkennen
+        boolean alleenWoorden = true;
+        boolean trigger = false;
+        int caseDiepte = 0; //binnen een trigger: een END dat een CASE afsluit, sluit de trigger niet
+        String vorige = null;
+        while (i < n) {
+            char c = sql.charAt(i);
+            if (Character.isWhitespace(c) || c == '\uFEFF') {
+                i++;
+            } else if (c == '-' && i + 1 < n && sql.charAt(i + 1) == '-') {
+                int e = sql.indexOf('\n', i);
+                i = e < 0 ? n : e + 1;
+            } else if (c == '/' && i + 1 < n && sql.charAt(i + 1) == '*') {
+                int e = sql.indexOf("*/", i + 2);
+                i = e < 0 ? n : e + 2;
+            } else if (c == '\'' || c == '"' || c == '`' || c == '[') {
+                char sluit = c == '[' ? ']' : c;
+                int e = i + 1;
+                while (e < n) {
+                    if (sql.charAt(e) == sluit) {
+                        if (sluit != ']' && e + 1 < n && sql.charAt(e + 1) == sluit) {
+                            e += 2;
+                            continue;
+                        }
+                        break;
+                    }
+                    e++;
+                }
+                i = Math.min(n, e + 1);
+                vorige = null;
+                alleenWoorden = false;
+            } else if (c == ';') {
+                if (!trigger || "END".equals(vorige)) return i + 1;
+                i++;
+                vorige = null;
+            } else if (Character.isLetter(c) || c == '_') {
+                int e = i;
+                while (e < n && (Character.isLetterOrDigit(sql.charAt(e)) || sql.charAt(e) == '_' || sql.charAt(e) == '$')) e++;
+                String woord = sql.substring(i, e).toUpperCase(Locale.ROOT);
+                if (alleenWoorden && eerste.size() < 4) {
+                    eerste.add(woord);
+                    List<String> w = !eerste.isEmpty() && eerste.get(0).equals("EXPLAIN") ? eerste.subList(1, eerste.size()) : eerste;
+                    if (w.size() >= 2 && w.get(0).equals("CREATE") &&
+                        (w.get(1).equals("TRIGGER") || (w.size() >= 3 && (w.get(1).equals("TEMP") || w.get(1).equals("TEMPORARY")) && w.get(2).equals("TRIGGER")))) {
+                        trigger = true;
+                    }
+                }
+                if (trigger && woord.equals("CASE")) {
+                    caseDiepte++;
+                } else if (trigger && woord.equals("END") && caseDiepte > 0) {
+                    caseDiepte--;
+                    woord = "END CASE";
+                }
+                vorige = woord;
+                i = e;
+            } else {
+                alleenWoorden = false;
+                vorige = null;
+                i++;
+            }
+        }
+        return n;
+    }
+
+    /** Of het statement met SELECT begint (na witruimte en commentaar): alleen lezen */
+    static boolean isSelect(String sql) {
+        int i = 0;
+        int n = sql.length();
+        while (i < n) {
+            char c = sql.charAt(i);
+            if (Character.isWhitespace(c) || c == '\uFEFF') {
+                i++;
+            } else if (c == '-' && i + 1 < n && sql.charAt(i + 1) == '-') {
+                int e = sql.indexOf('\n', i);
+                i = e < 0 ? n : e + 1;
+            } else if (c == '/' && i + 1 < n && sql.charAt(i + 1) == '*') {
+                int e = sql.indexOf("*/", i + 2);
+                i = e < 0 ? n : e + 2;
+            } else {
+                break;
+            }
+        }
+        return sql.regionMatches(true, i, "SELECT", 0, 6) && (i + 6 >= n || !Character.isLetterOrDigit(sql.charAt(i + 6)));
+    }
+
+    /** Of er vanaf index alleen witruimte, commentaar en puntkomma's staan */
+    static boolean alleenRest(String sql, int index) {
+        int i = index;
+        int n = sql.length();
+        while (i < n) {
+            char c = sql.charAt(i);
+            if (Character.isWhitespace(c) || c == ';' || c == '\uFEFF') {
+                i++;
+            } else if (c == '-' && i + 1 < n && sql.charAt(i + 1) == '-') {
+                int e = sql.indexOf('\n', i);
+                i = e < 0 ? n : e + 1;
+            } else if (c == '/' && i + 1 < n && sql.charAt(i + 1) == '*') {
+                int e = sql.indexOf("*/", i + 2);
+                i = e < 0 ? n : e + 2;
+            } else {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static final Set<String> TRANSACTIE = new HashSet<>(Arrays.asList("BEGIN", "COMMIT", "END", "ROLLBACK", "SAVEPOINT", "RELEASE"));

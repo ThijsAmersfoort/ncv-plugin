@@ -1,5 +1,6 @@
 import Foundation
 import Capacitor
+import UIKit
 
 /**
  * Please read the Capacitor iOS Plugin Development Guide
@@ -29,13 +30,31 @@ public class NCVpluginPlugin: CAPPlugin, CAPBridgedPlugin {
     private let implementation = NCVplugin()
     private let sqlite = SQLiteService.gedeeld
 
+    override public func load() {
+        //databases in WAL-modus: bij naar de achtergrond gaan de WAL in de database zetten (een checkpoint), zodat het
+        //bestand op zichzelf compleet is als iOS de app daarna stopt
+        NotificationCenter.default.addObserver(self, selector: #selector(naarAchtergrond), name: UIApplication.didEnterBackgroundNotification, object: nil)
+    }
+
+    @objc private func naarAchtergrond() {
+        var taak = UIBackgroundTaskIdentifier.invalid
+        let einde = {
+            if taak != .invalid {
+                UIApplication.shared.endBackgroundTask(taak)
+                taak = .invalid
+            }
+        }
+        taak = UIApplication.shared.beginBackgroundTask(withName: "NCVplugin.checkpoint") { einde() }
+        sqlite.checkpointAlles { DispatchQueue.main.async { einde() } }
+    }
+
     // MARK: SQLite (de SQL-logica staat in SQLiteService en SQLiteVerbinding)
 
     @objc func sqliteOpen(_ call: CAPPluginCall) {
         guard let name = call.getString("name"), let mode = call.getString("mode") else {
             return ongeldig(call, "name en mode zijn verplicht")
         }
-        sqlite.open(naam: name, modus: mode, seed: call.getString("seedAsset")) { self.afronden(call, $0) }
+        sqlite.open(naam: name, modus: mode, seed: call.getString("seedAsset"), wal: call.getBool("wal") ?? false) { self.afronden(call, $0) }
     }
 
     @objc func sqliteExecute(_ call: CAPPluginCall) {
@@ -45,7 +64,7 @@ public class NCVpluginPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         let waarden = call.options["values"] as? [Any] ?? []
         sqlite.uitvoeren(id: id, sql: sql, waarden: waarden, resultaat: resultaat) { uitkomst in
-            self.afronden(call, uitkomst.map { resultaat == .none ? [:] : ["rows": $0] })
+            self.afronden(call, uitkomst.map { resultaat == .none ? [:] : $0.bridge })
         }
     }
 
@@ -62,7 +81,7 @@ public class NCVpluginPlugin: CAPPlugin, CAPBridgedPlugin {
             statements.append((sql, item["values"] as? [Any] ?? []))
         }
         sqlite.batch(id: id, statements: statements, resultaat: resultaat) { uitkomst in
-            self.afronden(call, uitkomst.map { resultaat == .none ? [:] : ["results": $0] })
+            self.afronden(call, uitkomst.map { resultaat == .none ? [:] : ["results": $0.map { $0.bridge }] })
         }
     }
 
@@ -100,9 +119,13 @@ public class NCVpluginPlugin: CAPPlugin, CAPBridgedPlugin {
             platform = "mac"
         }
         let version = ProcessInfo.processInfo.operatingSystemVersionString
+        //X9: catalyst (de Mac-build) en osVersie (alleen het nummer, gelijk op beide platforms); platform blijft zoals het was
+        let os = ProcessInfo.processInfo.operatingSystemVersion
         call.resolve([
             "platform": platform,
-            "version": version
+            "version": version,
+            "catalyst": ProcessInfo.processInfo.isMacCatalystApp,
+            "osVersie": "\(os.majorVersion).\(os.minorVersion).\(os.patchVersion)"
         ])
     }
 
@@ -120,7 +143,7 @@ public class NCVpluginPlugin: CAPPlugin, CAPBridgedPlugin {
         var result: Result<Void, Error>
 
         if let html = call.options["html"] as? String {
-            result = implementation.ClipboardWrite(content: html, ofType: NCVplugin.ContentType.html)
+            result = implementation.ClipboardWrite(content: html, ofType: NCVplugin.ContentType.html, plainText: call.options["text"] as? String)
         } else if let string = call.options["string"] as? String {
             result = implementation.ClipboardWrite(content: string, ofType: NCVplugin.ContentType.string)
         } else if let urlString = call.options["url"] as? String {

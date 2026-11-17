@@ -30,6 +30,29 @@ enum SQLiteResultaat: String {
     case none, first, all
 }
 
+/// Rijen als kolomnamen plus een array per rij: over de bridge de helft van de JSON van een object per rij (de facade
+/// `sqlite.ts` bouwt de objecten terug). Bij dubbele kolomnamen wint de laatste, zoals bij een object per rij.
+struct SQLiteRijen {
+    let kolommen: [String]
+    var waarden: [[Any]]
+
+    static let leeg = SQLiteRijen(kolommen: [], waarden: [])
+
+    var objecten: [[String: Any]] {
+        waarden.map { rij in
+            var object = [String: Any](minimumCapacity: kolommen.count)
+            for (index, kolom) in kolommen.enumerated() {
+                object[kolom] = rij[index]
+            }
+            return object
+        }
+    }
+
+    var bridge: [String: Any] {
+        ["columns": kolommen, "values": waarden]
+    }
+}
+
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 //grootste geheel getal dat JavaScript exact kent; daarbuiten {"$int": "..."}
 private let maxVeiligGetal: Int64 = 9_007_199_254_740_991
@@ -38,6 +61,16 @@ private let maxVeiligGetal: Int64 = 9_007_199_254_740_991
 final class SQLiteVerbinding {
     let naam: String
     private var db: OpaquePointer?
+    /// In WAL-modus geopend (`instellen(schrijfbaar:wal:)`): dan een checkpoint als de app naar de achtergrond gaat.
+    private(set) var isWal = false
+
+    /// Voorbereide statements per SQL-tekst (LRU): de gedeelde routes voeren steeds dezelfde SQL uit. Na elk gebruik
+    /// `sqlite3_reset` en `sqlite3_clear_bindings`, zodat een statement geen leesslot vasthoudt en geen oude waarden meeneemt.
+    /// Lange SQL (bijvoorbeeld een lange `IN (...)`) wordt niet bewaard: die komt zelden terug en kost veel geheugen.
+    static let cacheGrootte = 32
+    static let maxCacheLengte = 4096
+    private var cache: [String: OpaquePointer] = [:]
+    private var volgorde: [String] = []//minst recent gebruikt vooraan
 
     init(pad: String, flags: Int32, naam: String) throws {
         self.naam = naam
@@ -57,21 +90,49 @@ final class SQLiteVerbinding {
     }
 
     func sluiten() {
+        legeCache()
         if let db = db {
             sqlite3_close_v2(db)
         }
         db = nil
     }
 
+    private func legeCache() {
+        for statement in cache.values {
+            sqlite3_finalize(statement)
+        }
+        cache.removeAll()
+        volgorde.removeAll()
+    }
+
     /// Vaste instellingen, gelijk aan de compileeropties van de vorige Cordova-engine (SYNCHRONOUS=3, TEMP_STORE=2).
-    func instellen(schrijfbaar: Bool) throws {
+    /// `wal`: journal_mode WAL met synchronous NORMAL (bestand blijft heel na een crash van app of systeem; alleen de laatste
+    /// transacties kunnen bij stroomverlies terugvallen). Lukt WAL niet, dan blijft het de vaste instelling.
+    func instellen(schrijfbaar: Bool, wal: Bool = false) throws {
         try exec("PRAGMA temp_store = MEMORY")
         if schrijfbaar {
-            try exec("PRAGMA synchronous = EXTRA")
+            if wal, (try uitvoeren("PRAGMA journal_mode = WAL", [], .first).first?["journal_mode"] as? String)?.lowercased() == "wal" {
+                isWal = true
+                try exec("PRAGMA synchronous = NORMAL")
+            } else {
+                try exec("PRAGMA synchronous = EXTRA")
+            }
             try exec("PRAGMA foreign_keys = OFF")
         }
         //leest het schema: een bestand dat geen database is valt hier al af
         _ = try uitvoeren("SELECT count(*) FROM sqlite_master", [], .none)
+    }
+
+    /// Zet de WAL over in de database en maakt hem leeg (bij naar de achtergrond gaan). Buiten WAL niets.
+    func checkpoint() throws {
+        if isWal {
+            try exec("PRAGMA wal_checkpoint(TRUNCATE)")
+        }
+    }
+
+    var journalMode: String {
+        let rij = try? uitvoeren("PRAGMA journal_mode", [], .first).first
+        return (rij?["journal_mode"] as? String) ?? ""
     }
 
     func userVersion() throws -> Int {
@@ -99,38 +160,79 @@ final class SQLiteVerbinding {
     }
 
     /// Voert precies één statement uit. Rijen alleen bij `first`/`all`; het statement loopt altijd tot het einde.
-    func uitvoeren(_ sql: String, _ waarden: [Any], _ resultaat: SQLiteResultaat) throws -> [[String: Any]] {
+    func uitvoerenRijen(_ sql: String, _ waarden: [Any], _ resultaat: SQLiteResultaat) throws -> SQLiteRijen {
         let db = try handle()
-        return try sql.withCString { tekst -> [[String: Any]] in
+        guard let (stmt, bewaard) = try statement(db, sql) else {
+            return .leeg//alleen witruimte, commentaar of een losse puntkomma
+        }
+        defer {
+            if bewaard {
+                sqlite3_reset(stmt)
+                sqlite3_clear_bindings(stmt)
+            } else {
+                sqlite3_finalize(stmt)
+            }
+        }
+        try binden(db, stmt, waarden)
+        return try stappen(db, stmt, resultaat)
+    }
+
+    /// Als `uitvoerenRijen`, met een object per rij (intern en in de tests).
+    func uitvoeren(_ sql: String, _ waarden: [Any], _ resultaat: SQLiteResultaat) throws -> [[String: Any]] {
+        try uitvoerenRijen(sql, waarden, resultaat).objecten
+    }
+
+    /// Een voorbereid statement uit de cache, of een nieuw (gecontroleerd op één statement en zo nodig bewaard).
+    /// `bewaard`: in de cache (na gebruik resetten), anders na gebruik finaliseren.
+    private func statement(_ db: OpaquePointer, _ sql: String) throws -> (OpaquePointer, bewaard: Bool)? {
+        if let bewaard = cache[sql] {
+            if let plek = volgorde.firstIndex(of: sql) {
+                volgorde.remove(at: plek)
+            }
+            volgorde.append(sql)
+            return (bewaard, true)
+        }
+        return try sql.withCString { tekst -> (OpaquePointer, bewaard: Bool)? in
             var statement: OpaquePointer?
             var rest: UnsafePointer<CChar>?
             let rc = sqlite3_prepare_v2(db, tekst, -1, &statement, &rest)
             guard rc == SQLITE_OK else {
                 throw sqlFout(rc, db)
             }
-            guard let stmt = statement else {
+            do {
                 try controleerRest(db, rest)
-                return []//alleen witruimte, commentaar of een losse puntkomma
+            } catch {
+                sqlite3_finalize(statement)
+                throw error
             }
-            defer { sqlite3_finalize(stmt) }
-            try controleerRest(db, rest)
-            try binden(db, stmt, waarden)
-            return try stappen(db, stmt, resultaat)
+            guard let stmt = statement else {
+                return nil
+            }
+            guard sql.utf8.count <= SQLiteVerbinding.maxCacheLengte else {
+                return (stmt, false)
+            }
+            if cache.count >= SQLiteVerbinding.cacheGrootte, !volgorde.isEmpty {
+                let oudste = volgorde.removeFirst()
+                sqlite3_finalize(cache.removeValue(forKey: oudste))
+            }
+            cache[sql] = stmt
+            volgorde.append(sql)
+            return (stmt, true)
         }
     }
 
     /// Alle statements in één transactie: `BEGIN IMMEDIATE` om te schrijven, `BEGIN DEFERRED` voor rijen per statement.
-    func batch(_ statements: [(sql: String, waarden: [Any])], _ resultaat: SQLiteResultaat) throws -> [[[String: Any]]] {
+    func batch(_ statements: [(sql: String, waarden: [Any])], _ resultaat: SQLiteResultaat) throws -> [SQLiteRijen] {
         let db = try handle()
         try exec(resultaat == .none ? "BEGIN IMMEDIATE" : "BEGIN DEFERRED")
         do {
-            var uitkomst: [[[String: Any]]] = []
+            var uitkomst: [SQLiteRijen] = []
             for (index, statement) in statements.enumerated() {
                 if SQLiteVerbinding.isTransactiecontrole(statement.sql) {
                     throw SQLiteFout("TRANSACTION_CONTROL", "Transactiecontrole hoort niet in een batch", statementIndex: index, database: naam)
                 }
                 do {
-                    let rijen = try uitvoeren(statement.sql, statement.waarden, resultaat)
+                    let rijen = try uitvoerenRijen(statement.sql, statement.waarden, resultaat)
                     if resultaat != .none {
                         uitkomst.append(rijen)
                     }
@@ -248,24 +350,36 @@ final class SQLiteVerbinding {
         throw SQLiteFout("INVALID_VALUE", "Ongeldige waarde voor parameter \(index)", database: naam)
     }
 
-    private func stappen(_ db: OpaquePointer, _ stmt: OpaquePointer, _ resultaat: SQLiteResultaat) throws -> [[String: Any]] {
-        let aantal = sqlite3_column_count(stmt)
-        let namen = (0..<aantal).map { kolom in sqlite3_column_name(stmt, kolom).map { String(cString: $0) } ?? String(kolom) }
-        var rijen: [[String: Any]] = []
+    private func stappen(_ db: OpaquePointer, _ stmt: OpaquePointer, _ resultaat: SQLiteResultaat) throws -> SQLiteRijen {
+        //de kolommen pas na de eerste stap: een bewaard statement wordt na een schemawijziging (ALTER TABLE onder een SELECT *)
+        //in sqlite3_step opnieuw voorbereid, en de kolommen van daarvoor kloppen dan niet meer
+        var aantal: Int32 = 0
+        var namen: [String]?
+        var rijen: [[Any]] = []
+        //sqlRow: een statement dat alleen leest hoeft na de eerste rij niet verder; een schrijvend statement wel (tot het einde)
+        let stopNaEerste = resultaat == .first && sqlite3_stmt_readonly(stmt) != 0
         while true {
             let rc = sqlite3_step(stmt)
-            if rc == SQLITE_DONE {
-                return rijen
-            }
-            guard rc == SQLITE_ROW else {
+            guard rc == SQLITE_ROW || rc == SQLITE_DONE else {
                 throw sqlFout(rc, db)
             }
+            if namen == nil {
+                aantal = sqlite3_column_count(stmt)
+                namen = (0..<aantal).map { kolom in sqlite3_column_name(stmt, kolom).map { String(cString: $0) } ?? String(kolom) }
+            }
+            if rc == SQLITE_DONE {
+                return SQLiteRijen(kolommen: namen ?? [], waarden: rijen)
+            }
             if resultaat == .all || (resultaat == .first && rijen.isEmpty) {
-                var rij = [String: Any](minimumCapacity: Int(aantal))
+                var rij: [Any] = []
+                rij.reserveCapacity(Int(aantal))
                 for kolom in 0..<aantal {
-                    rij[namen[Int(kolom)]] = waarde(stmt, kolom)
+                    rij.append(waarde(stmt, kolom))
                 }
                 rijen.append(rij)
+                if stopNaEerste {
+                    return SQLiteRijen(kolommen: namen ?? [], waarden: rijen)
+                }
             }
         }
     }
