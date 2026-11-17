@@ -288,8 +288,13 @@ public class SQLiteServiceTest {
         assertEquals(0, aantal(db, "t"));
         assertFalse(SQLiteVerbinding.isTransactiecontrole("CREATE TRIGGER x AFTER INSERT ON t BEGIN SELECT 1; END"));
 
-        //AndroidX leest alleen het eerste statement uit een string, net als de vorige Cordova-engine
-        sql(db, NONE, "INSERT INTO t VALUES (1); INSERT INTO t VALUES (2)");
+        //meer statements in één string: MULTIPLE_STATEMENTS, zoals op iOS (voorheen liep alleen het eerste)
+        SQLiteFout meer = fout(() -> sql(db, NONE, "INSERT INTO t VALUES (1); INSERT INTO t VALUES (2)"));
+        assertNotNull(meer);
+        assertEquals("MULTIPLE_STATEMENTS", meer.code);
+        assertEquals(0, aantal(db, "t"));
+        //afsluitende puntkomma en commentaar zijn geen tweede statement
+        sql(db, NONE, "INSERT INTO t VALUES (1); -- klaar");
         assertEquals(1, aantal(db, "t"));
         //VACUUM loopt buiten een transactie
         sql(db, NONE, "VACUUM");

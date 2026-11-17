@@ -52,11 +52,11 @@ public class Clipboard {
      * @param htmlContent The HTML content to be written to the clipboard.
      * @return A response indicating the success status of the write request.
      */
-    public ClipboardWriteResponse writeHtml(String label, String htmlContent) {
+    public ClipboardWriteResponse writeHtml(String label, String htmlContent, String text) {
         if (clipboard != null) {
             try {
-                // Create plain text fallback by stripping HTML tags
-                String plainText = Html.fromHtml(htmlContent, Html.FROM_HTML_MODE_LEGACY).toString();
+                // platte tekst van de app, anders uit de HTML
+                String plainText = text != null ? text : Html.fromHtml(htmlContent, Html.FROM_HTML_MODE_LEGACY).toString();
                 
                 // Create ClipData with both HTML and plain text
                 ClipData data = ClipData.newHtmlText(label, plainText, htmlContent);

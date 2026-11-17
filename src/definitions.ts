@@ -122,6 +122,12 @@ export interface WriteOptions {
   html?: string;
 
   /**
+   * Platte tekst bij `html`. Zonder deze waarde maakt de plugin hem zelf uit de HTML (iOS: met NSAttributedString op de main
+   * thread, wat bij een grote selectie hapert; de app heeft de platte tekst al).
+   */
+  text?: string;
+
+  /**
    * Image in [Data URL](https://developer.mozilla.org/en-US/docs/Web/HTTP/Basics_of_HTTP/Data_URIs) format to copy.
    *
    * @since 1.0.0

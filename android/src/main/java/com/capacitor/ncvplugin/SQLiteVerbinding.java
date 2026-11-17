@@ -118,12 +118,16 @@ final class SQLiteVerbinding {
 
     /**
      * Voert één statement uit. Rijen alleen bij FIRST/ALL; het statement loopt altijd tot het einde.
-     * AndroidX leest alleen het eerste statement uit de string (zoals de vorige Cordova-engine); meer statements zijn hier niet te herkennen.
+     * AndroidX leest alleen het eerste statement uit de string: meer statements geven MULTIPLE_STATEMENTS, zoals op iOS (X7). Voorheen
+     * liep alleen het eerste en kwam er succes terug, zodat bv. een migratie "ALTER ...; UPDATE ..." half liep.
      */
     List<JSObject> uitvoeren(String sql, JSONArray waarden, Resultaat resultaat) throws SQLiteFout {
         SQLiteConnection verbinding = handle();
         List<JSObject> rijen = new ArrayList<>();
         if (sql.trim().isEmpty()) return rijen;
+        if (!alleenRest(sql, eindeEersteStatement(sql))) {
+            throw new SQLiteFout("MULTIPLE_STATEMENTS", "Meer dan één SQL-statement in één aanroep", naam);
+        }
         SQLiteStatement statement;
         try {
             statement = verbinding.prepare(sql);
@@ -133,6 +137,8 @@ final class SQLiteVerbinding {
         try {
             binden(statement, waarden);
             String[] namen = null;
+            //sqlRow: een SELECT hoeft na de eerste rij niet verder; andere statements lopen tot het einde
+            boolean stopNaEerste = resultaat == Resultaat.FIRST && isSelect(sql);
             while (statement.step()) {
                 if (resultaat == Resultaat.ALL || (resultaat == Resultaat.FIRST && rijen.isEmpty())) {
                     if (namen == null) namen = statement.getColumnNames().toArray(new String[0]);
@@ -141,6 +147,7 @@ final class SQLiteVerbinding {
                         rij.put(namen[kolom], waarde(statement, kolom));
                     }
                     rijen.add(rij);
+                    if (stopNaEerste) break;
                 }
             }
             return rijen;
@@ -185,6 +192,120 @@ final class SQLiteVerbinding {
             terugdraaien(verbinding);
             throw fout;
         }
+    }
+
+    /**
+     * Index direct na het eerste statement (na zijn puntkomma), of de lengte van de string. Houdt rekening met strings, '"', `, [..],
+     * commentaar en de puntkomma's binnen CREATE [TEMP] TRIGGER ... BEGIN ... END (daar eindigt pas END; het statement), zoals
+     * sqlite3_complete.
+     */
+    static int eindeEersteStatement(String sql) {
+        int i = 0;
+        int n = sql.length();
+        List<String> eerste = new ArrayList<>(); //de eerste woorden, om CREATE TRIGGER te herkennen
+        boolean alleenWoorden = true;
+        boolean trigger = false;
+        int caseDiepte = 0; //binnen een trigger: een END dat een CASE afsluit, sluit de trigger niet
+        String vorige = null;
+        while (i < n) {
+            char c = sql.charAt(i);
+            if (Character.isWhitespace(c) || c == '\uFEFF') {
+                i++;
+            } else if (c == '-' && i + 1 < n && sql.charAt(i + 1) == '-') {
+                int e = sql.indexOf('\n', i);
+                i = e < 0 ? n : e + 1;
+            } else if (c == '/' && i + 1 < n && sql.charAt(i + 1) == '*') {
+                int e = sql.indexOf("*/", i + 2);
+                i = e < 0 ? n : e + 2;
+            } else if (c == '\'' || c == '"' || c == '`' || c == '[') {
+                char sluit = c == '[' ? ']' : c;
+                int e = i + 1;
+                while (e < n) {
+                    if (sql.charAt(e) == sluit) {
+                        if (sluit != ']' && e + 1 < n && sql.charAt(e + 1) == sluit) {
+                            e += 2;
+                            continue;
+                        }
+                        break;
+                    }
+                    e++;
+                }
+                i = Math.min(n, e + 1);
+                vorige = null;
+                alleenWoorden = false;
+            } else if (c == ';') {
+                if (!trigger || "END".equals(vorige)) return i + 1;
+                i++;
+                vorige = null;
+            } else if (Character.isLetter(c) || c == '_') {
+                int e = i;
+                while (e < n && (Character.isLetterOrDigit(sql.charAt(e)) || sql.charAt(e) == '_' || sql.charAt(e) == '$')) e++;
+                String woord = sql.substring(i, e).toUpperCase(Locale.ROOT);
+                if (alleenWoorden && eerste.size() < 4) {
+                    eerste.add(woord);
+                    List<String> w = !eerste.isEmpty() && eerste.get(0).equals("EXPLAIN") ? eerste.subList(1, eerste.size()) : eerste;
+                    if (w.size() >= 2 && w.get(0).equals("CREATE") &&
+                        (w.get(1).equals("TRIGGER") || (w.size() >= 3 && (w.get(1).equals("TEMP") || w.get(1).equals("TEMPORARY")) && w.get(2).equals("TRIGGER")))) {
+                        trigger = true;
+                    }
+                }
+                if (trigger && woord.equals("CASE")) {
+                    caseDiepte++;
+                } else if (trigger && woord.equals("END") && caseDiepte > 0) {
+                    caseDiepte--;
+                    woord = "END CASE";
+                }
+                vorige = woord;
+                i = e;
+            } else {
+                alleenWoorden = false;
+                vorige = null;
+                i++;
+            }
+        }
+        return n;
+    }
+
+    /** Of het statement met SELECT begint (na witruimte en commentaar): alleen lezen */
+    static boolean isSelect(String sql) {
+        int i = 0;
+        int n = sql.length();
+        while (i < n) {
+            char c = sql.charAt(i);
+            if (Character.isWhitespace(c) || c == '\uFEFF') {
+                i++;
+            } else if (c == '-' && i + 1 < n && sql.charAt(i + 1) == '-') {
+                int e = sql.indexOf('\n', i);
+                i = e < 0 ? n : e + 1;
+            } else if (c == '/' && i + 1 < n && sql.charAt(i + 1) == '*') {
+                int e = sql.indexOf("*/", i + 2);
+                i = e < 0 ? n : e + 2;
+            } else {
+                break;
+            }
+        }
+        return sql.regionMatches(true, i, "SELECT", 0, 6) && (i + 6 >= n || !Character.isLetterOrDigit(sql.charAt(i + 6)));
+    }
+
+    /** Of er vanaf index alleen witruimte, commentaar en puntkomma's staan */
+    static boolean alleenRest(String sql, int index) {
+        int i = index;
+        int n = sql.length();
+        while (i < n) {
+            char c = sql.charAt(i);
+            if (Character.isWhitespace(c) || c == ';' || c == '\uFEFF') {
+                i++;
+            } else if (c == '-' && i + 1 < n && sql.charAt(i + 1) == '-') {
+                int e = sql.indexOf('\n', i);
+                i = e < 0 ? n : e + 1;
+            } else if (c == '/' && i + 1 < n && sql.charAt(i + 1) == '*') {
+                int e = sql.indexOf("*/", i + 2);
+                i = e < 0 ? n : e + 2;
+            } else {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static final Set<String> TRANSACTIE = new HashSet<>(Arrays.asList("BEGIN", "COMMIT", "END", "ROLLBACK", "SAVEPOINT", "RELEASE"));

@@ -127,7 +127,7 @@ public class NCVpluginPlugin extends Plugin {
         ClipboardWriteResponse response;
 
         if (htmlVal != null) {
-            response = CBimplementation.writeHtml(label, htmlVal);
+            response = CBimplementation.writeHtml(label, htmlVal, call.getString("text"));
         } else if (strVal != null) {
             response = CBimplementation.write(label, strVal);
         } else if (imageVal != null) {

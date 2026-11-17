@@ -120,7 +120,7 @@ public class NCVpluginPlugin: CAPPlugin, CAPBridgedPlugin {
         var result: Result<Void, Error>
 
         if let html = call.options["html"] as? String {
-            result = implementation.ClipboardWrite(content: html, ofType: NCVplugin.ContentType.html)
+            result = implementation.ClipboardWrite(content: html, ofType: NCVplugin.ContentType.html, plainText: call.options["text"] as? String)
         } else if let string = call.options["string"] as? String {
             result = implementation.ClipboardWrite(content: string, ofType: NCVplugin.ContentType.string)
         } else if let urlString = call.options["url"] as? String {

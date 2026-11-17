@@ -252,6 +252,8 @@ final class SQLiteVerbinding {
         let aantal = sqlite3_column_count(stmt)
         let namen = (0..<aantal).map { kolom in sqlite3_column_name(stmt, kolom).map { String(cString: $0) } ?? String(kolom) }
         var rijen: [[String: Any]] = []
+        //sqlRow: een statement dat alleen leest hoeft na de eerste rij niet verder; een schrijvend statement wel (tot het einde)
+        let stopNaEerste = resultaat == .first && sqlite3_stmt_readonly(stmt) != 0
         while true {
             let rc = sqlite3_step(stmt)
             if rc == SQLITE_DONE {
@@ -266,6 +268,9 @@ final class SQLiteVerbinding {
                     rij[namen[Int(kolom)]] = waarde(stmt, kolom)
                 }
                 rijen.append(rij)
+                if stopNaEerste {
+                    return rijen
+                }
             }
         }
     }
