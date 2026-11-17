@@ -113,8 +113,10 @@ public class Clipboard {
             }
 
             // Check if it's a data URL (for images)
-            if (value != null && value.toString().startsWith("data:")) {
-                type = value.toString().split(";")[0].split(":")[1];
+            //X9: alleen een echte data-URL (data:type;...): precies "data:" gaf een ArrayIndexOutOfBounds, en een fout die
+            //uit een pluginmethode ontsnapt, stopt op Android het proces
+            if (value != null && value.toString().matches("(?s)^data:[^;,]+[;,].*")) {
+                type = value.toString().substring(5).split("[;,]")[0];
             }
 
             clipboardData.setType(type);

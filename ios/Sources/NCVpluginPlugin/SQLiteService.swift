@@ -49,13 +49,14 @@ final class SQLiteService {
 
     // MARK: openen, sluiten, verwijderen
 
-    func open(naam: String, modus: String, seed: String?, klaar: @escaping (Result<[String: Any], Error>) -> Void) {
+    /// `wal`: alleen bij `persistent` (zie `SQLiteVerbinding.instellen`).
+    func open(naam: String, modus: String, seed: String?, wal: Bool = false, klaar: @escaping (Result<[String: Any], Error>) -> Void) {
         beheer.async {
-            klaar(Result { try self.openNu(naam: naam, modus: modus, seed: seed) })
+            klaar(Result { try self.openNu(naam: naam, modus: modus, seed: seed, wal: wal) })
         }
     }
 
-    private func openNu(naam: String, modus: String, seed: String?) throws -> [String: Any] {
+    private func openNu(naam: String, modus: String, seed: String?, wal: Bool) throws -> [String: Any] {
         try controleerNaam(naam)
         if let seed = seed {
             try controleerNaam(seed)
@@ -64,6 +65,11 @@ final class SQLiteService {
         if let bestaand = metSlot({ perBestand[sleutel].flatMap { geopend[$0] } }) {
             var info = bestaand.info
             info["reused"] = true
+            //X9: de actuele user_version, niet die van het eerste openen (een migratie kan hem intussen verhoogd hebben).
+            //Op de queue van die database: de verbinding (en zijn statementcache) mag maar door één thread tegelijk gebruikt worden
+            if let versie = bestaand.queue.sync(execute: { try? bestaand.verbinding.userVersion() }) {
+                info["userVersion"] = versie
+            }
             return info
         }
 
@@ -83,7 +89,12 @@ final class SQLiteService {
             var map = dataMap
             var waarden = URLResourceValues()
             waarden.isExcludedFromBackup = true
-            try? map.setResourceValues(waarden)
+            do {
+                try map.setResourceValues(waarden)
+            } catch {
+                //X9: niet meer stil; de database staat dan wel in de back-up
+                NSLog("NCVplugin: uitsluiten van de back-up mislukt: %@", error.localizedDescription)
+            }
 
             let url = dataMap.appendingPathComponent(naam)
             var gekopieerd = false
@@ -100,8 +111,9 @@ final class SQLiteService {
         }
 
         do {
-            try verbinding.instellen(schrijfbaar: modus == "persistent")
+            try verbinding.instellen(schrijfbaar: modus == "persistent", wal: wal && modus == "persistent")
             info["userVersion"] = try verbinding.userVersion()
+            info["journalMode"] = verbinding.journalMode
         } catch {
             verbinding.sluiten()
             throw error
@@ -212,12 +224,30 @@ final class SQLiteService {
         }
     }
 
-    func uitvoeren(id: String, sql: String, waarden: [Any], resultaat: SQLiteResultaat, klaar: @escaping (Result<[[String: Any]], Error>) -> Void) {
-        aanbieden(id, klaar) { try $0.uitvoeren(sql, waarden, resultaat) }
+    func uitvoeren(id: String, sql: String, waarden: [Any], resultaat: SQLiteResultaat, klaar: @escaping (Result<SQLiteRijen, Error>) -> Void) {
+        aanbieden(id, klaar) { try $0.uitvoerenRijen(sql, waarden, resultaat) }
     }
 
-    func batch(id: String, statements: [(sql: String, waarden: [Any])], resultaat: SQLiteResultaat, klaar: @escaping (Result<[[[String: Any]]], Error>) -> Void) {
+    func batch(id: String, statements: [(sql: String, waarden: [Any])], resultaat: SQLiteResultaat, klaar: @escaping (Result<[SQLiteRijen], Error>) -> Void) {
         aanbieden(id, klaar) { try $0.batch(statements, resultaat) }
+    }
+
+    /// Checkpoint van elke database in WAL-modus (bij naar de achtergrond gaan), op de queue van die database.
+    /// `klaar` als alle checkpoints gelopen hebben; een fout wordt alleen gelogd (de WAL blijft dan gewoon geldig).
+    func checkpointAlles(klaar: @escaping () -> Void) {
+        let groep = DispatchGroup()
+        metSlot {
+            for item in geopend.values where item.verbinding.isWal {
+                item.queue.async(group: groep) {
+                    do {
+                        try item.verbinding.checkpoint()
+                    } catch {
+                        NSLog("NCVplugin: checkpoint van %@ mislukt: %@", item.verbinding.naam, String(describing: error))
+                    }
+                }
+            }
+        }
+        groep.notify(queue: .global(qos: .utility), execute: klaar)
     }
 
     private func controleerNaam(_ naam: String) throws {

@@ -39,10 +39,12 @@ npx cap sync
 ### info()
 
 ```typescript
-info() => Promise<{ platform: string; version: string; }>
+info() => Promise<{ platform: string; version: string; catalyst?: boolean; osVersie?: string; }>
 ```
 
-**Returns:** <code>Promise&lt;{ platform: string; version: string; }&gt;</code>
+catalyst: de Mac-build (Mac Catalyst); osVersie: alleen het versienummer, gelijk op beide platforms
+
+**Returns:** <code>Promise&lt;{ platform: string; version: string; catalyst?: boolean; osVersie?: string; }&gt;</code>
 
 --------------------
 
@@ -260,13 +262,14 @@ schermvergrendeling. iOS gebruikt dezelfde Keychain-items als die plugin en zet 
 
 #### WriteOptions
 
-| Prop         | Type                | Description                                                                                                     | Since |
-| ------------ | ------------------- | --------------------------------------------------------------------------------------------------------------- | ----- |
-| **`string`** | <code>string</code> | Text value to copy.                                                                                             | 1.0.0 |
-| **`html`**   | <code>string</code> | Html value to copy.                                                                                             | 1.0.0 |
-| **`image`**  | <code>string</code> | Image in [Data URL](https://developer.mozilla.org/en-US/docs/Web/HTTP/Basics_of_HTTP/Data_URIs) format to copy. | 1.0.0 |
-| **`url`**    | <code>string</code> | URL string to copy.                                                                                             | 1.0.0 |
-| **`label`**  | <code>string</code> | User visible label to accompany the copied data (Android Only).                                                 | 1.0.0 |
+| Prop         | Type                | Description                                                                                                                                                                                           | Since |
+| ------------ | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
+| **`string`** | <code>string</code> | Text value to copy.                                                                                                                                                                                   | 1.0.0 |
+| **`html`**   | <code>string</code> | Html value to copy.                                                                                                                                                                                   | 1.0.0 |
+| **`text`**   | <code>string</code> | Platte tekst bij `html`. Zonder deze waarde maakt de plugin hem zelf uit de HTML (iOS: met NSAttributedString op de main thread, wat bij een grote selectie hapert; de app heeft de platte tekst al). |       |
+| **`image`**  | <code>string</code> | Image in [Data URL](https://developer.mozilla.org/en-US/docs/Web/HTTP/Basics_of_HTTP/Data_URIs) format to copy.                                                                                       | 1.0.0 |
+| **`url`**    | <code>string</code> | URL string to copy.                                                                                                                                                                                   | 1.0.0 |
+| **`label`**  | <code>string</code> | User visible label to accompany the copied data (Android Only).                                                                                                                                       | 1.0.0 |
 
 
 #### ReadResult
@@ -304,6 +307,7 @@ Represents the data read from the clipboard.
 | **`reused`**        | <code>boolean</code>                      | Bestaande verbinding hergebruikt.                                                                  |
 | **`sqliteVersion`** | <code>string</code>                       |                                                                                                    |
 | **`userVersion`**   | <code>number</code>                       |                                                                                                    |
+| **`journalMode`**   | <code>string</code>                       | `delete`, `wal`, … (PRAGMA journal_mode).                                                          |
 
 
 #### SQLiteOpenOptions
@@ -314,13 +318,14 @@ Represents the data read from the clipboard.
 | **`mode`**      | <code>'bundled' \| 'persistent'</code> | `bundled`: alleen-lezen appinhoud uit `public/` (Apple direct uit de bundel, Android een beheerde kopie). `persistent`: schrijfbaar bestand op de vaste plek van de app (Apple `Library/LocalDatabase`, Android `getDatabasePath`). |
 | **`seedAsset`** | <code>string</code>                    | `persistent`: bestand in `public/` dat alleen bij een ontbrekende database wordt gekopieerd.                                                                                                                                        |
 | **`contentId`** | <code>string</code>                    | `bundled`, Android: SHA-256 (hex) van het bestand in de build; bepaalt of de beheerde kopie vernieuwd moet worden.                                                                                                                  |
+| **`wal`**       | <code>boolean</code>                   | `persistent`: `journal_mode=WAL` met `synchronous=NORMAL` (anders `synchronous=EXTRA`), en een checkpoint als de app naar de achtergrond gaat. Lukt WAL niet, dan blijft het de vaste instelling (zie `journalMode`).               |
 
 
 #### SQLiteExecuteResult
 
-| Prop       | Type                     |
-| ---------- | ------------------------ |
-| **`rows`** | <code>SQLiteRow[]</code> |
+| Prop       | Type                     | Description                                                   |
+| ---------- | ------------------------ | ------------------------------------------------------------- |
+| **`rows`** | <code>SQLiteRow[]</code> | De vorige vorm (een object per rij); `sqlite.ts` leest beide. |
 
 
 #### SQLiteBlob
@@ -349,9 +354,19 @@ Represents the data read from the clipboard.
 
 #### SQLiteBatchResult
 
-| Prop          | Type                       |
-| ------------- | -------------------------- |
-| **`results`** | <code>SQLiteRow[][]</code> |
+| Prop          | Type                                                                 |
+| ------------- | -------------------------------------------------------------------- |
+| **`results`** | <code>(SQLiteRow[] \| <a href="#sqliterows">SQLiteRows</a>)[]</code> |
+
+
+#### SQLiteRows
+
+Rijen over de bridge: kolomnamen en per rij de waarden in die volgorde (`sqlite.ts` maakt er objecten van).
+
+| Prop          | Type                         |
+| ------------- | ---------------------------- |
+| **`columns`** | <code>string[]</code>        |
+| **`values`**  | <code>SQLiteValue[][]</code> |
 
 
 #### SQLiteBatchOptions

@@ -28,6 +28,8 @@ public class NCVpluginPlugin extends Plugin {
         JSObject ret = new JSObject();
         ret.put("platform", platform);
         ret.put("version", release);
+        ret.put("catalyst", false);
+        ret.put("osVersie", release);
         call.resolve(ret);
     }
 
@@ -42,6 +44,13 @@ public class NCVpluginPlugin extends Plugin {
         secureStorage = new SecureStorage(getContext().getApplicationContext());
     }
 
+    /** Databases in WAL-modus: bij naar de achtergrond gaan de WAL in de database zetten (back-up, en Android kan de app stoppen). */
+    @Override
+    protected void handleOnPause() {
+        super.handleOnPause();
+        if (sqlite != null) sqlite.checkpointAlles();
+    }
+
     // SQLite (de SQL-logica staat in SQLiteService en SQLiteVerbinding)
 
     @PluginMethod
@@ -52,7 +61,7 @@ public class NCVpluginPlugin extends Plugin {
             call.reject("name en mode zijn verplicht", "INVALID_ARGUMENT");
             return;
         }
-        sqlite.open(name, mode, call.getString("seedAsset"), call.getString("contentId"), sqliteAfronden(call));
+        sqlite.open(name, mode, call.getString("seedAsset"), call.getString("contentId"), Boolean.TRUE.equals(call.getBoolean("wal", false)), sqliteAfronden(call));
     }
 
     @PluginMethod
@@ -165,8 +174,21 @@ public class NCVpluginPlugin extends Plugin {
 
     @PluginMethod
     public void openUrl(PluginCall call) {
+        //X9: deed niets en meldde toch completed: true. Nu met een ACTION_VIEW-intent (browser of een app voor de link)
+        String url = call.getString("url");
+        if (url == null || url.isEmpty()) {
+            call.reject("Must supply a URL");
+            return;
+        }
         JSObject ret = new JSObject();
-        ret.put("completed", true);
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(intent);
+            ret.put("completed", true);
+        } catch (Exception e) {
+            ret.put("completed", false);
+        }
         call.resolve(ret);
     }
 

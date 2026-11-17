@@ -1,5 +1,6 @@
 export interface NCVpluginPlugin {
-  info(): Promise<{ platform: string, version: string }>;
+  /** catalyst: de Mac-build (Mac Catalyst); osVersie: alleen het versienummer, gelijk op beide platforms */
+  info(): Promise<{ platform: string, version: string, catalyst?: boolean, osVersie?: string }>;
   ClipboardWrite(options: WriteOptions): Promise<void>;
   ClipboardRead(): Promise<ReadResult>;
   openUrl(options: OpenURLOptions): Promise<OpenURLResult>;
@@ -67,6 +68,11 @@ export interface SQLiteOpenOptions {
   seedAsset?: string;
   /** `bundled`, Android: SHA-256 (hex) van het bestand in de build; bepaalt of de beheerde kopie vernieuwd moet worden. */
   contentId?: string;
+  /**
+   * `persistent`: `journal_mode=WAL` met `synchronous=NORMAL` (anders `synchronous=EXTRA`), en een checkpoint als de app naar
+   * de achtergrond gaat. Lukt WAL niet, dan blijft het de vaste instelling (zie `journalMode`).
+   */
+  wal?: boolean;
 }
 
 export interface SQLiteOpenResult {
@@ -80,6 +86,8 @@ export interface SQLiteOpenResult {
   reused: boolean;
   sqliteVersion: string;
   userVersion: number;
+  /** `delete`, `wal`, … (PRAGMA journal_mode). */
+  journalMode?: string;
 }
 
 export type SQLiteResultMode = 'none' | 'first' | 'all';
@@ -91,7 +99,14 @@ export interface SQLiteExecuteOptions {
   result: SQLiteResultMode;
 }
 
-export interface SQLiteExecuteResult {
+/** Rijen over de bridge: kolomnamen en per rij de waarden in die volgorde (`sqlite.ts` maakt er objecten van). */
+export interface SQLiteRows {
+  columns: string[];
+  values: SQLiteValue[][];
+}
+
+export interface SQLiteExecuteResult extends Partial<SQLiteRows> {
+  /** De vorige vorm (een object per rij); `sqlite.ts` leest beide. */
   rows?: SQLiteRow[];
 }
 
@@ -103,7 +118,7 @@ export interface SQLiteBatchOptions {
 }
 
 export interface SQLiteBatchResult {
-  results?: SQLiteRow[][];
+  results?: (SQLiteRows | SQLiteRow[])[];
 }
 
 export interface WriteOptions {

@@ -132,9 +132,19 @@ public class SQLiteServiceTest {
 
     private List<JSONObject> sql(String id, SQLiteVerbinding.Resultaat resultaat, String sql, Object... waarden) throws Exception {
         JSObject res = wacht(k -> service.uitvoeren(id, sql, waarden(waarden), resultaat, k));
-        JSONArray rows = res.optJSONArray("rows");
+        return objecten(res);
+    }
+
+    /** {columns, values} terug naar een object per rij, zoals sqlite.ts (bij dubbele namen wint de laatste) */
+    private static List<JSONObject> objecten(JSONObject res) throws Exception {
+        JSONArray kolommen = res.optJSONArray("columns");
+        JSONArray rows = res.optJSONArray("values");
         List<JSONObject> rijen = new ArrayList<>();
-        for (int i = 0; rows != null && i < rows.length(); i++) rijen.add(rows.getJSONObject(i));
+        for (int i = 0; rows != null && i < rows.length(); i++) {
+            JSONObject rij = new JSONObject();
+            for (int k = 0; k < kolommen.length(); k++) rij.put(kolommen.getString(k), rows.getJSONArray(i).opt(k));
+            rijen.add(rij);
+        }
         return rijen;
     }
 
@@ -250,11 +260,17 @@ public class SQLiteServiceTest {
         List<JSONObject> eerste = sql(db, FIRST, "SELECT x FROM t ORDER BY x");
         assertEquals(1, eerste.size());
         assertEquals(1, eerste.get(0).getInt("x"));
-        assertNull(wacht(k -> service.uitvoeren(db, "INSERT INTO t VALUES (3)", waarden(), NONE, k)).opt("rows"));
+        assertNull(wacht(k -> service.uitvoeren(db, "INSERT INTO t VALUES (3)", waarden(), NONE, k)).opt("values"));
         JSONArray results = batch(db, ALL, st("SELECT count(*) AS n FROM t"), st("SELECT x FROM t WHERE x > ?", 5)).getJSONArray("results");
         assertEquals(2, results.length());
-        assertEquals(3, results.getJSONArray(0).getJSONObject(0).getInt("n"));
-        assertEquals(0, results.getJSONArray(1).length());
+        assertEquals(3, objecten(results.getJSONObject(0)).get(0).getInt("n"));
+        assertEquals(0, objecten(results.getJSONObject(1)).size());
+        //rijen als arrays: kolomnamen ook zonder rijen, dubbele naam: de laatste wint
+        JSObject arrays = wacht(k -> service.uitvoeren(db, "SELECT 1 AS a, 'x' AS b, 2 AS a", waarden(), ALL, k));
+        assertEquals("[\"a\",\"b\",\"a\"]", arrays.getJSONArray("columns").toString());
+        assertEquals(3, arrays.getJSONArray("values").getJSONArray(0).length());
+        assertEquals(2, objecten(arrays).get(0).getInt("a"));
+        assertEquals(1, wacht(k -> service.uitvoeren(db, "SELECT 1 AS a WHERE 0", waarden(), ALL, k)).getJSONArray("columns").length());
         //alleen witruimte
         assertEquals(0, sql(db, "   ").size());
     }
@@ -460,5 +476,59 @@ public class SQLiteServiceTest {
         verwijder("weg.sqlite");
         assertFalse(new File(map, "weg.sqlite").exists());
         verwijder("weg.sqlite"); //ontbrekend bestand is geen fout
+    }
+
+    @Test
+    public void statementcache() throws Exception {
+        String db = id(open("cache.sqlite"));
+        sql(db, NONE, "CREATE TABLE t (x, y)");
+        //hetzelfde statement met andere waarden: geen oude bindingen (ontbrekende waarden worden NULL)
+        sql(db, NONE, "INSERT INTO t VALUES (?, ?)", 1, "a");
+        sql(db, NONE, "INSERT INTO t VALUES (?, ?)", 2);
+        assertTrue(sql(db, "SELECT y FROM t WHERE x = 2").get(0).isNull("y"));
+        //sqlRow stopt na de eerste rij: het statement wordt gereset, dus schrijven, DROP en VACUUM gaan daarna gewoon
+        assertEquals(1, sql(db, FIRST, "SELECT x FROM t ORDER BY x").get(0).getInt("x"));
+        sql(db, NONE, "INSERT INTO t VALUES (3, 'c')");
+        sql(db, NONE, "CREATE TABLE weg (z)");
+        sql(db, "SELECT * FROM weg");
+        sql(db, NONE, "DROP TABLE weg");
+        assertNotNull(code(() -> sql(db, "SELECT * FROM weg")));
+        sql(db, NONE, "VACUUM");
+        //een bewaarde SELECT * na een nieuwe kolom: de kolommen van na het opnieuw voorbereiden
+        assertEquals(2, sql(db, "SELECT * FROM t WHERE x = 1").get(0).length());
+        sql(db, NONE, "ALTER TABLE t ADD COLUMN z DEFAULT 7");
+        assertEquals(7, sql(db, "SELECT * FROM t WHERE x = 1").get(0).getInt("z"));
+        assertEquals(3, sql(db, FIRST, "SELECT * FROM t WHERE x = 1").get(0).length());
+        //meer verschillende statements dan de cache groot is
+        for (int i = 0; i < SQLiteVerbinding.CACHE_GROOTTE + 8; i++) assertEquals(i, sql(db, "SELECT " + i + " AS n").get(0).getInt("n"));
+        assertEquals(3, aantal(db, "t"));
+        //een lange statement (niet in de cache) werkt ook
+        StringBuilder lang = new StringBuilder("SELECT count(*) AS n FROM t WHERE x IN (0");
+        for (int i = 1; i < 2000; i++) lang.append(',').append(i);
+        assertEquals(3, sql(db, lang.append(')').toString()).get(0).getInt("n"));
+        sluit(db);
+    }
+
+    @Test
+    public void walEnCheckpoint() throws Exception {
+        JSObject info = wacht(k -> service.open("wal.sqlite", "persistent", null, null, true, k));
+        assertEquals("wal", info.getString("journalMode"));
+        String db = id(info);
+        sql(db, NONE, "CREATE TABLE t (x)");
+        SQLiteVerbinding.Statement[] rijen = new SQLiteVerbinding.Statement[200];
+        for (int i = 0; i < rijen.length; i++) rijen[i] = st("INSERT INTO t VALUES (?)", i);
+        batch(db, NONE, rijen);
+        File walBestand = new File(map, "wal.sqlite-wal");
+        assertTrue(walBestand.length() > 0);
+        for (java.util.concurrent.Future<?> taak : service.checkpointAlles()) taak.get(10, TimeUnit.SECONDS);
+        assertEquals(0, walBestand.length());
+        assertEquals(200, aantal(db, "t"));
+        sluit(db);
+        //zonder wal blijft het de vaste instelling
+        JSObject gewoon = open("gewoon.sqlite");
+        assertEquals("delete", gewoon.getString("journalMode"));
+        sluit(id(gewoon));
+        verwijder("wal.sqlite");
+        assertFalse(walBestand.exists());
     }
 }

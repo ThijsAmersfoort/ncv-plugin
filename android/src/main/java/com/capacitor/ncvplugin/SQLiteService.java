@@ -100,19 +100,35 @@ final class SQLiteService {
     // openen, sluiten, verwijderen
 
     void open(String naam, String modus, String seed, String contentId, Klaar klaar) {
-        starten(beheer, () -> openNu(naam, modus, seed, contentId), klaar);
+        open(naam, modus, seed, contentId, false, klaar);
     }
 
-    private JSObject openNu(String naam, String modus, String seed, String contentId) throws SQLiteFout {
+    /** wal: alleen bij persistent (zie SQLiteVerbinding.instellen). */
+    void open(String naam, String modus, String seed, String contentId, boolean wal, Klaar klaar) {
+        starten(beheer, () -> openNu(naam, modus, seed, contentId, wal), klaar);
+    }
+
+    private JSObject openNu(String naam, String modus, String seed, String contentId, boolean wal) throws SQLiteFout {
         controleerNaam(naam);
         if (seed != null) controleerNaam(seed);
+        Geopend hergebruikt = null;
         synchronized (this) {
             Geopend bestaand = geopend.get(perBestand.get(naam));
             if (bestaand != null) {
                 //hetzelfde bestand in een andere modus zou de open database vervangen of anders openen
                 if (!bestaand.modus.equals(modus)) throw new SQLiteFout("DB_IN_USE", naam + " is al open als " + bestaand.modus, naam);
-                return kopie(bestaand.info).put("reused", true);
+                hergebruikt = bestaand;
             }
+        }
+        if (hergebruikt != null) {
+            JSObject info = kopie(hergebruikt.info).put("reused", true);
+            //X9: de actuele user_version, niet die van het eerste openen. Op de executor van die database: de verbinding (en zijn
+            //statementcache) mag maar door één thread tegelijk gebruikt worden
+            Geopend item = hergebruikt;
+            try {
+                info.put("userVersion", (int) item.queue.submit(() -> item.verbinding.userVersion()).get(1, TimeUnit.MINUTES));
+            } catch (Exception ignored) {} //gesloten intussen, of een fout: de versie van het eerste openen
+            return info;
         }
 
         //dezelfde plek als de vorige Cordova-plugin: Context.getDatabasePath
@@ -144,8 +160,9 @@ final class SQLiteService {
         }
 
         try {
-            verbinding.instellen(schrijfbaar);
+            verbinding.instellen(schrijfbaar, wal && schrijfbaar);
             info.put("userVersion", verbinding.userVersion());
+            info.put("journalMode", verbinding.journalMode());
         } catch (SQLiteFout fout) {
             verbinding.sluiten();
             throw fout;
@@ -360,8 +377,8 @@ final class SQLiteService {
         aanbieden(
             id,
             verbinding -> {
-                List<JSObject> rijen = verbinding.uitvoeren(sql, waarden, resultaat);
-                return resultaat == SQLiteVerbinding.Resultaat.NONE ? new JSObject() : new JSObject().put("rows", new JSArray(rijen));
+                SQLiteVerbinding.Rijen rijen = verbinding.uitvoerenRijen(sql, waarden, resultaat);
+                return resultaat == SQLiteVerbinding.Resultaat.NONE ? new JSObject() : rijen.naarBridge();
             },
             klaar
         );
@@ -371,14 +388,37 @@ final class SQLiteService {
         aanbieden(
             id,
             verbinding -> {
-                List<List<JSObject>> uitkomst = verbinding.batch(statements, resultaat);
+                List<SQLiteVerbinding.Rijen> uitkomst = verbinding.batch(statements, resultaat);
                 if (resultaat == SQLiteVerbinding.Resultaat.NONE) return new JSObject();
                 JSArray results = new JSArray();
-                for (List<JSObject> rijen : uitkomst) results.put(new JSArray(rijen));
+                for (SQLiteVerbinding.Rijen rijen : uitkomst) results.put(rijen.naarBridge());
                 return new JSObject().put("results", results);
             },
             klaar
         );
+    }
+
+    /**
+     * Checkpoint van elke database in WAL-modus (bij naar de achtergrond gaan), op de executor van die database. Een fout wordt
+     * alleen gelogd: de WAL blijft dan gewoon geldig. Geeft de taken terug (de tests wachten erop).
+     */
+    synchronized List<java.util.concurrent.Future<?>> checkpointAlles() {
+        List<java.util.concurrent.Future<?>> taken = new java.util.ArrayList<>();
+        for (Geopend item : geopend.values()) {
+            if (!item.verbinding.isWal()) continue;
+            try {
+                taken.add(
+                    item.queue.submit(() -> {
+                        try {
+                            item.verbinding.checkpoint();
+                        } catch (SQLiteFout fout) {
+                            android.util.Log.w("NCVplugin", "checkpoint van " + item.naam + " mislukt: " + fout.getMessage());
+                        }
+                    })
+                );
+            } catch (RejectedExecutionException ignored) {} //intussen gesloten
+        }
+        return taken;
     }
 
     private static JSObject kopie(JSObject info) {
