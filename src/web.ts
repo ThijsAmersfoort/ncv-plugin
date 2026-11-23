@@ -150,6 +150,10 @@ export class NCVpluginWeb extends WebPlugin implements NCVpluginPlugin {
     return { completed: true };
   }
 
+  async share(): Promise<void> {
+    throw this.unavailable('Gebruik navigator.share in de browser');
+  }
+
   //SQLite is er alleen native; de browserversies van de app gebruiken hun eigen databaseadapter
   async sqliteOpen(): Promise<SQLiteOpenResult> {
     throw this.unavailable('SQLite is alleen beschikbaar in de native app');

@@ -134,11 +134,11 @@ class Database implements SQLiteDatabase {
 
 /** Opent een database via de native plugin (iOS/Android); op het web volgt een `UNAVAILABLE`-fout. */
 export async function openSQLiteDatabase(options: SQLiteOpenOptions): Promise<SQLiteDatabase> {
-  const { name, mode, seedAsset, contentId, wal } = options;
-  return new Database(await NCVplugin.sqliteOpen({ name, mode, seedAsset, contentId, wal }));
+  const { name, mode, seedAsset, contentId, wal, backup } = options;
+  return new Database(await NCVplugin.sqliteOpen({ name, mode, seedAsset, contentId, wal, backup }));
 }
 
-/** Verwijdert een gesloten `persistent`-database (met journal/WAL-bestanden). */
-export async function deleteSQLiteDatabase(name: string): Promise<void> {
-  await NCVplugin.sqliteDelete({ name });
+/** Verwijdert een gesloten `persistent`-database (met journal/WAL-bestanden); `backup` zoals bij het openen. */
+export async function deleteSQLiteDatabase(name: string, options: { backup?: boolean } = {}): Promise<void> {
+  await NCVplugin.sqliteDelete({ name, backup: options.backup });
 }

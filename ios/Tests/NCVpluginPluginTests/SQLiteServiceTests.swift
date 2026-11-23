@@ -21,6 +21,34 @@ class SQLiteServiceTests: XCTestCase {
         try? FileManager.default.removeItem(at: map)
     }
 
+    // MARK: back-upmap
+
+    /// `backup: true` opent in een eigen map (wel in de back-up), los van een gewone database met dezelfde naam
+    func testBackupInEigenMap() throws {
+        let backupMap = map.appendingPathComponent("Library/Backup")
+        let info = try wacht { self.service.open(naam: "kopie.sqlite", modus: "persistent", seed: nil, backup: true, klaar: $0) }.get()
+        try sql(id(info), "CREATE TABLE t(x)")
+        try sql(id(info), "INSERT INTO t VALUES (1)")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: backupMap.appendingPathComponent("kopie.sqlite").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: data.appendingPathComponent("kopie.sqlite").path))
+        let waarden = try backupMap.resourceValues(forKeys: [.isExcludedFromBackupKey])
+        XCTAssertNotEqual(waarden.isExcludedFromBackup, true)
+
+        //een gewone database met dezelfde naam is een ander bestand
+        let gewoon = try open("kopie.sqlite")
+        XCTAssertNotEqual(id(gewoon), id(info))
+        try sluit(id(gewoon))
+        try verwijder("kopie.sqlite")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: backupMap.appendingPathComponent("kopie.sqlite").path))
+
+        //verwijderen weigert zolang hij open is, daarna weg
+        let open = wacht { self.service.verwijderen(naam: "kopie.sqlite", backup: true, klaar: $0) }
+        XCTAssertEqual((try? open.get()) == nil, true)
+        try sluit(id(info))
+        _ = try wacht { self.service.verwijderen(naam: "kopie.sqlite", backup: true, klaar: $0) }.get()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: backupMap.appendingPathComponent("kopie.sqlite").path))
+    }
+
     // MARK: hulpfuncties
 
     private func wacht<T>(_ start: (@escaping (Result<T, Error>) -> Void) -> Void) -> Result<T, Error> {

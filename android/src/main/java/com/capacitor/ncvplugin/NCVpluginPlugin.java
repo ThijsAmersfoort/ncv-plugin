@@ -192,6 +192,52 @@ public class NCVpluginPlugin extends Plugin {
         call.resolve(ret);
     }
 
+    /** Het deelmenu (de Android-WebView heeft geen navigator.share). Lost op zodra het menu geopend is */
+    @PluginMethod
+    public void share(PluginCall call) {
+        String titel = call.getString("title");
+        String tekst = call.getString("text");
+        String url = call.getString("url");
+        JSArray lijst = call.getArray("files", new JSArray());
+        List<Delen.Bestand> bestanden = new ArrayList<>();
+        try {
+            for (int i = 0; i < lijst.length(); i++) {
+                JSONObject f = lijst.getJSONObject(i);
+                String data = f.optString("data", null);
+                if (data == null) throw new IllegalArgumentException("Elk bestand heeft data nodig");
+                String type = f.optString("type", "");
+                bestanden.add(new Delen.Bestand(Delen.veiligeNaam(f.optString("name", null)), type.isEmpty() ? "application/octet-stream" : type, Delen.decodeer(data)));
+            }
+        } catch (Exception e) {
+            call.reject("Ongeldige bestanden: " + e.getMessage(), "INVALID_ARGUMENT");
+            return;
+        }
+        if (bestanden.isEmpty() && Delen.samenvoegen(tekst, url) == null && (titel == null || titel.isEmpty())) {
+            call.reject("Niets om te delen", "INVALID_ARGUMENT");
+            return;
+        }
+        execute(() -> { //bestanden schrijven niet op de main thread
+            try {
+                Intent kiezer = new Delen(getContext()).maakIntent(titel, tekst, url, bestanden);
+                Activity activity = getActivity();
+                if (activity == null) {
+                    call.reject("Geen activity om het deelmenu te tonen");
+                    return;
+                }
+                activity.runOnUiThread(() -> {
+                    try {
+                        activity.startActivity(kiezer);
+                        call.resolve();
+                    } catch (Exception e) {
+                        call.reject("Deelmenu openen mislukt: " + e.getMessage());
+                    }
+                });
+            } catch (Exception e) {
+                call.reject("Delen mislukt: " + e.getMessage());
+            }
+        });
+    }
+
     // Beveiligde opslag (de opslag- en overzetlogica staat in SecureStorage en LegacySecureStorage)
 
     @PluginMethod
