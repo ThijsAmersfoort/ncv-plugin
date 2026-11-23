@@ -17,6 +17,7 @@ npx cap sync
 * [`ClipboardWrite(...)`](#clipboardwrite)
 * [`ClipboardRead()`](#clipboardread)
 * [`openUrl(...)`](#openurl)
+* [`share(...)`](#share)
 * [`sqliteOpen(...)`](#sqliteopen)
 * [`sqliteExecute(...)`](#sqliteexecute)
 * [`sqliteBatch(...)`](#sqlitebatch)
@@ -84,6 +85,22 @@ openUrl(options: OpenURLOptions) => Promise<OpenURLResult>
 | **`options`** | <code><a href="#openurloptions">OpenURLOptions</a></code> |
 
 **Returns:** <code>Promise&lt;<a href="#openurlresult">OpenURLResult</a>&gt;</code>
+
+--------------------
+
+
+### share(...)
+
+```typescript
+share(options: ShareOptions) => Promise<void>
+```
+
+Alleen Android: het deelmenu van het systeem (de Android-WebView heeft geen `navigator.share`). Tekst, titel en url,
+en/of bestanden (base64). Lost op zodra het menu geopend is; of er echt gedeeld werd, meldt Android niet.
+
+| Param         | Type                                                  |
+| ------------- | ----------------------------------------------------- |
+| **`options`** | <code><a href="#shareoptions">ShareOptions</a></code> |
 
 --------------------
 
@@ -158,14 +175,14 @@ Sluit na de al aangeboden aanvragen; daarna geeft de database `DB_CLOSED`.
 ### sqliteDelete(...)
 
 ```typescript
-sqliteDelete(options: { name: string; }) => Promise<void>
+sqliteDelete(options: { name: string; backup?: boolean; }) => Promise<void>
 ```
 
 Verwijdert een gesloten `persistent`-database met journal/WAL-bestanden.
 
-| Param         | Type                           |
-| ------------- | ------------------------------ |
-| **`options`** | <code>{ name: string; }</code> |
+| Param         | Type                                             |
+| ------------- | ------------------------------------------------ |
+| **`options`** | <code>{ name: string; backup?: boolean; }</code> |
 
 --------------------
 
@@ -296,6 +313,25 @@ Represents the data read from the clipboard.
 | **`url`** | <code>string</code> |
 
 
+#### ShareOptions
+
+| Prop        | Type                     |
+| ----------- | ------------------------ |
+| **`title`** | <code>string</code>      |
+| **`text`**  | <code>string</code>      |
+| **`url`**   | <code>string</code>      |
+| **`files`** | <code>ShareFile[]</code> |
+
+
+#### ShareFile
+
+| Prop       | Type                | Description                                          |
+| ---------- | ------------------- | ---------------------------------------------------- |
+| **`name`** | <code>string</code> | Bestandsnaam zonder pad, bijvoorbeeld `Analyse.png`. |
+| **`type`** | <code>string</code> | MIME-type, bijvoorbeeld `image/png`.                 |
+| **`data`** | <code>string</code> | Inhoud als base64 (zonder `data:`-voorvoegsel).      |
+
+
 #### SQLiteOpenResult
 
 | Prop                | Type                                      | Description                                                                                        |
@@ -312,13 +348,14 @@ Represents the data read from the clipboard.
 
 #### SQLiteOpenOptions
 
-| Prop            | Type                                   | Description                                                                                                                                                                                                                         |
-| --------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **`name`**      | <code>string</code>                    | Bestandsnaam zonder pad, bijvoorbeeld `NCVbasis.sqlite`.                                                                                                                                                                            |
-| **`mode`**      | <code>'bundled' \| 'persistent'</code> | `bundled`: alleen-lezen appinhoud uit `public/` (Apple direct uit de bundel, Android een beheerde kopie). `persistent`: schrijfbaar bestand op de vaste plek van de app (Apple `Library/LocalDatabase`, Android `getDatabasePath`). |
-| **`seedAsset`** | <code>string</code>                    | `persistent`: bestand in `public/` dat alleen bij een ontbrekende database wordt gekopieerd.                                                                                                                                        |
-| **`contentId`** | <code>string</code>                    | `bundled`, Android: SHA-256 (hex) van het bestand in de build; bepaalt of de beheerde kopie vernieuwd moet worden.                                                                                                                  |
-| **`wal`**       | <code>boolean</code>                   | `persistent`: `journal_mode=WAL` met `synchronous=NORMAL` (anders `synchronous=EXTRA`), en een checkpoint als de app naar de achtergrond gaat. Lukt WAL niet, dan blijft het de vaste instelling (zie `journalMode`).               |
+| Prop            | Type                                   | Description                                                                                                                                                                                                                                                                                                                                              |
+| --------------- | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`name`**      | <code>string</code>                    | Bestandsnaam zonder pad, bijvoorbeeld `NCVbasis.sqlite`.                                                                                                                                                                                                                                                                                                 |
+| **`mode`**      | <code>'bundled' \| 'persistent'</code> | `bundled`: alleen-lezen appinhoud uit `public/` (Apple direct uit de bundel, Android een beheerde kopie). `persistent`: schrijfbaar bestand op de vaste plek van de app (Apple `Library/LocalDatabase`, Android `getDatabasePath`).                                                                                                                      |
+| **`seedAsset`** | <code>string</code>                    | `persistent`: bestand in `public/` dat alleen bij een ontbrekende database wordt gekopieerd.                                                                                                                                                                                                                                                             |
+| **`contentId`** | <code>string</code>                    | `bundled`, Android: SHA-256 (hex) van het bestand in de build; bepaalt of de beheerde kopie vernieuwd moet worden.                                                                                                                                                                                                                                       |
+| **`wal`**       | <code>boolean</code>                   | `persistent`: `journal_mode=WAL` met `synchronous=NORMAL` (anders `synchronous=EXTRA`), en een checkpoint als de app naar de achtergrond gaat. Lukt WAL niet, dan blijft het de vaste instelling (zie `journalMode`).                                                                                                                                    |
+| **`backup`**    | <code>boolean</code>                   | `persistent`, Apple: in `Library/Application Support/NCV/Databases` in plaats van `Library/LocalDatabase`, zodat het bestand wel in de iCloud-back-up (en Time Machine) gaat. Android negeert dit: daar bepalen `backup_rules.xml` en `data_extraction_rules.xml` van de app wat in de back-up gaat. Gebruik dezelfde waarde bij `deleteSQLiteDatabase`. |
 
 
 #### SQLiteExecuteResult

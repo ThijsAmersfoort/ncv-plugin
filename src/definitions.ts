@@ -4,6 +4,11 @@ export interface NCVpluginPlugin {
   ClipboardWrite(options: WriteOptions): Promise<void>;
   ClipboardRead(): Promise<ReadResult>;
   openUrl(options: OpenURLOptions): Promise<OpenURLResult>;
+  /**
+   * Alleen Android: het deelmenu van het systeem (de Android-WebView heeft geen `navigator.share`). Tekst, titel en url,
+   * en/of bestanden (base64). Lost op zodra het menu geopend is; of er echt gedeeld werd, meldt Android niet.
+   */
+  share(options: ShareOptions): Promise<void>;
 
   /**
    * Opent een SQLite-database (alleen iOS/Android). Gebruik in de app `openSQLiteDatabase`.
@@ -17,7 +22,7 @@ export interface NCVpluginPlugin {
   /** Sluit na de al aangeboden aanvragen; daarna geeft de database `DB_CLOSED`. */
   sqliteClose(options: { databaseId: string }): Promise<void>;
   /** Verwijdert een gesloten `persistent`-database met journal/WAL-bestanden. */
-  sqliteDelete(options: { name: string }): Promise<void>;
+  sqliteDelete(options: { name: string; backup?: boolean }): Promise<void>;
 
   /**
    * Beveiligde opslag van strings (alleen iOS/Android): Keychain op iOS/Mac, Keystore op Android.
@@ -73,6 +78,12 @@ export interface SQLiteOpenOptions {
    * de achtergrond gaat. Lukt WAL niet, dan blijft het de vaste instelling (zie `journalMode`).
    */
   wal?: boolean;
+  /**
+   * `persistent`, Apple: in `Library/Application Support/NCV/Databases` in plaats van `Library/LocalDatabase`, zodat het bestand
+   * wel in de iCloud-back-up (en Time Machine) gaat. Android negeert dit: daar bepalen `backup_rules.xml` en
+   * `data_extraction_rules.xml` van de app wat in de back-up gaat. Gebruik dezelfde waarde bij `deleteSQLiteDatabase`.
+   */
+  backup?: boolean;
 }
 
 export interface SQLiteOpenResult {
@@ -203,6 +214,22 @@ export interface OpenURLOptions {
 
 export interface OpenURLResult {
   completed: boolean;
+}
+
+export interface ShareOptions {
+  title?: string;
+  text?: string;
+  url?: string;
+  files?: ShareFile[];
+}
+
+export interface ShareFile {
+  /** Bestandsnaam zonder pad, bijvoorbeeld `Analyse.png`. */
+  name: string;
+  /** MIME-type, bijvoorbeeld `image/png`. */
+  type?: string;
+  /** Inhoud als base64 (zonder `data:`-voorvoegsel). */
+  data: string;
 }
 /**
  * Foutcodes van de beveiligde opslag. De waarde bestaat, maar is nu niet leesbaar; behandel dit niet als

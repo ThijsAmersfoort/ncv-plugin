@@ -54,7 +54,8 @@ public class NCVpluginPlugin: CAPPlugin, CAPBridgedPlugin {
         guard let name = call.getString("name"), let mode = call.getString("mode") else {
             return ongeldig(call, "name en mode zijn verplicht")
         }
-        sqlite.open(naam: name, modus: mode, seed: call.getString("seedAsset"), wal: call.getBool("wal") ?? false) { self.afronden(call, $0) }
+        sqlite.open(naam: name, modus: mode, seed: call.getString("seedAsset"), wal: call.getBool("wal") ?? false,
+                    backup: call.getBool("backup") ?? false) { self.afronden(call, $0) }
     }
 
     @objc func sqliteExecute(_ call: CAPPluginCall) {
@@ -96,7 +97,7 @@ public class NCVpluginPlugin: CAPPlugin, CAPBridgedPlugin {
         guard let name = call.getString("name") else {
             return ongeldig(call, "name is verplicht")
         }
-        sqlite.verwijderen(naam: name) { self.afronden(call, $0) }
+        sqlite.verwijderen(naam: name, backup: call.getBool("backup") ?? false) { self.afronden(call, $0) }
     }
 
     private func ongeldig(_ call: CAPPluginCall, _ melding: String) {

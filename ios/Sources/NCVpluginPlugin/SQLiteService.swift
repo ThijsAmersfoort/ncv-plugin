@@ -7,9 +7,12 @@ import SQLite3
 final class SQLiteService {
     static let gedeeld: SQLiteService = {
         let library = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         let bundel = (Bundle.main.resourceURL ?? Bundle.main.bundleURL).appendingPathComponent("public")
-        //dezelfde map als de vorige Cordova-plugin (location 'default'), uitgesloten van de backup
-        return SQLiteService(bundelMap: bundel, dataMap: library.appendingPathComponent("LocalDatabase"))
+        //dezelfde map als de vorige Cordova-plugin (location 'default'), uitgesloten van de backup; `backup: true` in een eigen
+        //map die wel in de iCloud-back-up (en Time Machine) gaat
+        return SQLiteService(bundelMap: bundel, dataMap: library.appendingPathComponent("LocalDatabase"),
+                             backupMap: support.appendingPathComponent("NCV").appendingPathComponent("Databases"))
     }()
 
     private final class Geopend {
@@ -30,15 +33,22 @@ final class SQLiteService {
 
     private let bundelMap: URL
     private let dataMap: URL
+    private let backupMap: URL
     private let fm = FileManager.default
     private let beheer = DispatchQueue(label: "nl.ncv.sqlite.beheer")
     private let slot = NSLock()
     private var geopend: [String: Geopend] = [:]//databaseId → verbinding
     private var perBestand: [String: String] = [:]//modus/naam → databaseId
 
-    init(bundelMap: URL, dataMap: URL) {
+    init(bundelMap: URL, dataMap: URL, backupMap: URL? = nil) {
         self.bundelMap = bundelMap
         self.dataMap = dataMap
+        self.backupMap = backupMap ?? dataMap.deletingLastPathComponent().appendingPathComponent("Backup")
+    }
+
+    /// de sleutel in perBestand: een database met `backup` staat in een andere map dan een gewone met dezelfde naam
+    private static func sleutel(_ modus: String, _ naam: String, backup: Bool) -> String {
+        return modus + (backup ? "+backup" : "") + "/" + naam
     }
 
     private func metSlot<T>(_ blok: () throws -> T) rethrows -> T {
@@ -49,19 +59,20 @@ final class SQLiteService {
 
     // MARK: openen, sluiten, verwijderen
 
-    /// `wal`: alleen bij `persistent` (zie `SQLiteVerbinding.instellen`).
-    func open(naam: String, modus: String, seed: String?, wal: Bool = false, klaar: @escaping (Result<[String: Any], Error>) -> Void) {
+    /// `wal`: alleen bij `persistent` (zie `SQLiteVerbinding.instellen`). `backup`: alleen bij `persistent`, in `backupMap`
+    /// (wel in de back-up) in plaats van `dataMap`.
+    func open(naam: String, modus: String, seed: String?, wal: Bool = false, backup: Bool = false, klaar: @escaping (Result<[String: Any], Error>) -> Void) {
         beheer.async {
-            klaar(Result { try self.openNu(naam: naam, modus: modus, seed: seed, wal: wal) })
+            klaar(Result { try self.openNu(naam: naam, modus: modus, seed: seed, wal: wal, backup: backup && modus == "persistent") })
         }
     }
 
-    private func openNu(naam: String, modus: String, seed: String?, wal: Bool) throws -> [String: Any] {
+    private func openNu(naam: String, modus: String, seed: String?, wal: Bool, backup: Bool) throws -> [String: Any] {
         try controleerNaam(naam)
         if let seed = seed {
             try controleerNaam(seed)
         }
-        let sleutel = modus + "/" + naam
+        let sleutel = Self.sleutel(modus, naam, backup: backup)
         if let bestaand = metSlot({ perBestand[sleutel].flatMap { geopend[$0] } }) {
             var info = bestaand.info
             info["reused"] = true
@@ -85,18 +96,21 @@ final class SQLiteService {
             verbinding = try SQLiteVerbinding(pad: url.absoluteString + "?mode=ro&immutable=1", flags: SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, naam: naam)
             info = ["readOnly": true, "source": "bundle", "copied": false]
         case "persistent":
-            try fm.createDirectory(at: dataMap, withIntermediateDirectories: true)
-            var map = dataMap
-            var waarden = URLResourceValues()
-            waarden.isExcludedFromBackup = true
-            do {
-                try map.setResourceValues(waarden)
-            } catch {
-                //X9: niet meer stil; de database staat dan wel in de back-up
-                NSLog("NCVplugin: uitsluiten van de back-up mislukt: %@", error.localizedDescription)
+            let doelMap = backup ? backupMap : dataMap
+            try fm.createDirectory(at: doelMap, withIntermediateDirectories: true)
+            if !backup {
+                var map = dataMap
+                var waarden = URLResourceValues()
+                waarden.isExcludedFromBackup = true
+                do {
+                    try map.setResourceValues(waarden)
+                } catch {
+                    //X9: niet meer stil; de database staat dan wel in de back-up
+                    NSLog("NCVplugin: uitsluiten van de back-up mislukt: %@", error.localizedDescription)
+                }
             }
 
-            let url = dataMap.appendingPathComponent(naam)
+            let url = doelMap.appendingPathComponent(naam)
             var gekopieerd = false
             if let seed = seed, !fm.fileExists(atPath: url.path) {
                 try kopieerSeed(seed, naar: url)
@@ -187,14 +201,14 @@ final class SQLiteService {
     }
 
     /// Verwijdert een gesloten `persistent`-database met journal/WAL-bestanden. Een ontbrekend bestand is geen fout.
-    func verwijderen(naam: String, klaar: @escaping (Result<[String: Any], Error>) -> Void) {
+    func verwijderen(naam: String, backup: Bool = false, klaar: @escaping (Result<[String: Any], Error>) -> Void) {
         beheer.async {
             klaar(Result {
                 try self.controleerNaam(naam)
-                if self.metSlot({ self.perBestand["persistent/" + naam] != nil }) {
+                if self.metSlot({ self.perBestand[Self.sleutel("persistent", naam, backup: backup)] != nil }) {
                     throw SQLiteFout("DB_IN_USE", "\(naam) is nog open", database: naam)
                 }
-                let url = self.dataMap.appendingPathComponent(naam)
+                let url = (backup ? self.backupMap : self.dataMap).appendingPathComponent(naam)
                 do {
                     if self.fm.fileExists(atPath: url.path) {
                         try self.fm.removeItem(at: url)
